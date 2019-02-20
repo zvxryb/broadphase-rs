@@ -240,7 +240,6 @@ impl<'a> specs::System<'a> for Collisions {
                             min: Point3::new(pos.1.x - r, pos.1.y - r, 0.0f32),
                             max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
                         (bounds, ent.id())}));
-            self.system.sort();
 
             self.collisions = self.system.detect_collisions()
                 .iter()
@@ -399,7 +398,7 @@ impl ggez::event::EventHandler for GameState {
             let scale  = collision_config.bounds.size();
             let offset = collision_config.bounds.min;
 
-            let iter = &mut self.collisions.system.tree.iter().peekable();
+            let iter = &mut self.collisions.system.tree.0.iter().peekable();
             while let Some(_) = iter.peek() {
                 let mut mesh_builder = MeshBuilder::new();
                 for &(index, _) in iter.take(1000) {
@@ -425,7 +424,10 @@ impl ggez::event::EventHandler for GameState {
 }
 
 fn main() {
-    let (mut context, mut event_loop) = ggez::ContextBuilder::new("broadphase demo", "zvxryb")
+    let (mut context, mut event_loop) = ggez::ContextBuilder::new("broadphase_demo", "zvxryb")
+        .window_setup(
+            ggez::conf::WindowSetup::default()
+                .title("broadphase demo"))
         .window_mode(
             ggez::conf::WindowMode::default()
                 .dimensions(1280f32, 720f32))

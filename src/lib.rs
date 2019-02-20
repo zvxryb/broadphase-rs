@@ -384,7 +384,7 @@ where
     Point: Copy
 {
     phantom: PhantomData<Point>,
-    pub tree: Vec<(Index, ID)>,
+    pub tree: (Vec<(Index, ID)>, bool),
     collisions: HashSet<(ID, ID), BuildHasher>,
     invalid: Vec<ID>
 }
@@ -401,7 +401,7 @@ where
     pub fn new() -> Self {
         Self {
             phantom: PhantomData{},
-            tree: Vec::new(),
+            tree: (Vec::new(), true),
             collisions: HashSet::default(),
             invalid: Vec::new()
         }
@@ -410,14 +410,16 @@ where
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             phantom: PhantomData{},
-            tree: Vec::with_capacity(capacity),
+            tree: (Vec::with_capacity(capacity), true),
             collisions: HashSet::default(),
             invalid: Vec::new()
         }
     }
 
     pub fn clear(&mut self) {
-        self.tree.clear();
+        let (tree, sorted) = &mut self.tree;
+        tree.clear();
+        *sorted = true;
         self.collisions.clear();
         self.invalid.clear();
     }
@@ -431,8 +433,10 @@ where
         Scalar_: std::fmt::Debug + num_traits::NumAssignOps,
         Bounds<Point_>: Containment + Quantize + QuantizeResult<Quantized = Bounds<Point>>
     {
+        let (tree, sorted) = &mut self.tree;
+
         if let (_, Some(max_objects)) = objects.size_hint() {
-            self.tree.reserve(max_objects);
+            tree.reserve(max_objects);
         }
 
         for (bounds, id) in objects {
@@ -440,30 +444,53 @@ where
                 self.invalid.push(id);
                 continue
             }
+            
 
-            self.tree.extend(bounds
+            tree.extend(bounds
                 .normalize_to_system(system_bounds)
                 .quantize()
                 .expect("failed to filter bounds outside system")
                 .indices()
                 .into_iter()
                 .map(|index| (index, id)));
+
+            *sorted = false;
         }
     }
 
+    pub fn merge(&mut self, other: &Layer<Index, ID, Point>) {
+        let (lhs_tree, sorted) = &mut self.tree;
+        let (rhs_tree, _) = &other.tree;
+
+        lhs_tree.extend(rhs_tree.iter());
+        *sorted = false;
+        return;
+    }
+
     #[cfg(feature="rayon")]
-    pub fn sort(&mut self) {
-        self.tree.par_sort_unstable();
+    fn sort_impl<T: Ord + Send, Slice: AsMut<[T]>>(items: &mut Slice) {
+        items.as_mut().par_sort_unstable();
     }
 
     #[cfg(not(feature="rayon"))]
-    pub fn sort(&mut self) {
-        self.tree.sort_unstable();
+    fn sort_impl<T: Ord, Slice: AsMut<[T]>>(items: &mut Slice) {
+        items.as_mut().sort_unstable();
+    }
+
+    fn sort(&mut self) {
+        let (tree, sorted) = &mut self.tree;
+        if !*sorted {
+            Self::sort_impl(tree);
+            *sorted = true;
+        }
     }
 
     pub fn detect_collisions<'a>(&'a mut self) -> &'a HashSet<(ID, ID), BuildHasher> {
+        self.sort();
+
         let mut stack: SmallVec<[(Index, ID); 32]> = SmallVec::new();
-        for &(index, id) in &self.tree {
+        let (tree, _) = &self.tree;
+        for &(index, id) in tree {
             while let Some(&(index_, _)) = stack.last() {
                 if index.overlaps(index_) {
                     break;
@@ -481,6 +508,7 @@ where
             }
             stack.push((index, id))
         }
+
         &self.collisions
     }
 }
