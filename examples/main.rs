@@ -143,10 +143,17 @@ impl<'a> specs::System<'a> for Lifecycle {
             }
         }
 
-        while ball_count.0 < 1500 {
-            let lifetime = Duration::from_millis(rand::thread_rng().gen_range(5000, 30000));
+        const BALL_COUNT_MAX: u32 = 1500;
+        const LIFETIME_MIN_MS: u32 = 5000;
+        const LIFETIME_MAX_MS: u32 = 30000;
+        for _ in 0..BALL_COUNT_MAX*time.delta.subsec_millis()/LIFETIME_MIN_MS {
+            if ball_count.0 >= BALL_COUNT_MAX {
+                break;
+            }
+            let lifetime = Duration::from_millis(rand::thread_rng().gen_range(
+                LIFETIME_MIN_MS as u64, LIFETIME_MAX_MS as u64));
 
-            let r = rand::thread_rng().gen_range(1f32, 3f32).exp();
+            let r = rand::thread_rng().gen_range(1.3f32, 2.8f32).exp();
 
             let x0 = screen_coords.0.x + r;
             let x1 = screen_coords.0.w - 2f32 * r + x0;
@@ -187,7 +194,7 @@ impl<'a> specs::System<'a> for Kinematics {
         for mut pos in (&mut positions).join() {
             let velocity = pos.1 - pos.0;
             let speed = velocity.magnitude();
-            const SPEED_LIMIT: f32 = 1f32;
+            const SPEED_LIMIT: f32 = 1.5f32;
             if speed > SPEED_LIMIT {
                 pos.1 = pos.0 + SPEED_LIMIT * velocity / speed;
             }
@@ -332,13 +339,12 @@ impl ggez::event::EventHandler for GameState {
     fn update(&mut self, context: &mut ggez::Context) -> ggez::GameResult<()> {
         self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
 
-        self.lifecycle.run_now(&self.world.res);
-        self.world.maintain();
-
         self.world.write_resource::<Time>().delta =
             Duration::from_micros(Self::FRAME_TIME_US as u64);
         while ggez::timer::check_update_time(context, Self::FRAME_RATE) {
             self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
+            self.lifecycle.run_now(&self.world.res);
+            self.world.maintain();
             self.kinematics.run_now(&self.world.res);
             self.collisions.run_now(&self.world.res);
         }
