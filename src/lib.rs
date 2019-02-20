@@ -485,7 +485,17 @@ where
         }
     }
 
-    pub fn detect_collisions<'a>(&'a mut self) -> &'a HashSet<(ID, ID), BuildHasher> {
+    pub fn detect_collisions<'a>(&'a mut self)
+        -> &'a HashSet<(ID, ID), BuildHasher>
+    {
+        self.detect_collisions_filtered(|_, _| true)
+    }
+
+    pub fn detect_collisions_filtered<'a, F>(&'a mut self, mut filter: F)
+        -> &'a HashSet<(ID, ID), BuildHasher>
+    where
+        F: FnMut(ID, ID) -> bool
+    {
         self.sort();
 
         let mut stack: SmallVec<[(Index, ID); 32]> = SmallVec::new();
@@ -502,7 +512,7 @@ where
                     if log_enabled!(log::Level::Debug) {
                         debug!("duplicate index for entity {:?}", id);
                     }
-                } else {
+                } else if filter(id, id_) {
                     self.collisions.insert((id, id_));
                 }
             }
