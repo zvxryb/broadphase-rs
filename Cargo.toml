@@ -1,0 +1,25 @@
+[package]
+name = "broadphase"
+publish = false
+version = "0.1.0"
+authors = ["zvxryb@gmail.com"]
+
+[profile.release]
+debug = true
+lto = false
+
+[features]
+default = []
+
+[dependencies]
+log = "^0.4.6"
+num-traits = "^0.2.6"
+cgmath = "^0.17.0"
+rayon = {version="^1.0.3", optional=true}
+smallvec = "^0.6.8"
+
+[dev-dependencies]
+ggez = {path="./third_party/ggez"}
+rand = "^0.6.4"
+rand_chacha = "^0.1.1"
+specs = "^0.14.3"
