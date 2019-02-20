@@ -177,7 +177,7 @@ impl<'a> specs::System<'a> for Kinematics {
     fn run(&mut self, data: Self::SystemData) {
         let (time, mut positions) = data;
         let dt = (time.delta.as_secs() as f32) + (time.delta.subsec_micros() as f32) / 1_000_000f32;
-        let gravity = 300f32 * dt * dt;
+        let gravity = 50f32 * dt * dt;
         for mut pos in (&mut positions).join() {
             let mut pos_2 = pos.1 + (pos.1 - pos.0);
             pos_2.y += gravity;
@@ -197,7 +197,7 @@ impl<'a> specs::System<'a> for Kinematics {
 
 struct Collisions {
     system: broadphase::Layer<broadphase::Index64_3D, specs::Entity, Point3<u32>>,
-    collisions: Vec<(specs::Entity, specs::Entity, Vector2<f32>)>,
+    collisions: Vec<(specs::Entity, specs::Entity, f32, Vector2<f32>)>,
 }
 
 impl Collisions {
@@ -251,7 +251,8 @@ impl<'a> specs::System<'a> for Collisions {
                     } else {
                         let d = dist_min - dist;
                         let n = offset / dist;
-                        Some((ent0, ent1, n * d / 2f32))
+                        let u = r1.powi(3) / (r0.powi(3) + r1.powi(3));
+                        Some((ent0, ent1, u, n * d))
                     }})
                 .collect();
         } else {
@@ -269,17 +270,18 @@ impl<'a> specs::System<'a> for Collisions {
                     if dist < dist_min {
                         let d = dist_min - dist;
                         let n = offset / dist;
+                        let u = r1.powi(3) / (r0.powi(3) + r1.powi(3));
                         self.collisions
-                            .push((ent0, ent1, n * d / 2f32));
+                            .push((ent0, ent1, u, n * d));
                     }
                 }
             }
         }
         print!("elapsed: {}    \r", start.elapsed().subsec_micros());
 
-        for &(ent0, ent1, v) in &self.collisions {
-            positions.get_mut(ent0).unwrap().1 -= v;
-            positions.get_mut(ent1).unwrap().1 += v;
+        for &(ent0, ent1, u, v) in &self.collisions {
+            positions.get_mut(ent0).unwrap().1 -= v * u;
+            positions.get_mut(ent1).unwrap().1 += v * (1f32 - u);
         }
 
         let x_min = screen_coords.0.x;
