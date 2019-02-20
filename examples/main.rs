@@ -203,7 +203,7 @@ impl<'a> specs::System<'a> for Kinematics {
 }
 
 struct Collisions {
-    system: broadphase::Layer<broadphase::Index64_3D, specs::Entity, Point3<u32>>,
+    system: broadphase::Layer<broadphase::Index64_3D, specs::world::Index, Point3<u32>>,
     collisions: Vec<(specs::Entity, specs::Entity, f32, Vector2<f32>)>,
 }
 
@@ -239,12 +239,14 @@ impl<'a> specs::System<'a> for Collisions {
                         let bounds = Bounds{
                             min: Point3::new(pos.1.x - r, pos.1.y - r, 0.0f32),
                             max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
-                        (bounds, ent)}));
+                        (bounds, ent.id())}));
             self.system.sort();
 
             self.collisions = self.system.detect_collisions()
                 .iter()
-                .filter_map(|&(ent0, ent1)| {
+                .filter_map(|&(id0, id1)| {
+                    let ent0 = entities.entity(id0);
+                    let ent1 = entities.entity(id1);
                     let pos0 = positions.get(ent0).unwrap();
                     let pos1 = positions.get(ent1).unwrap();
                     let Radius(r0) = radii.get(ent0).unwrap();

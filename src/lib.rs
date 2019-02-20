@@ -3,6 +3,15 @@
 extern crate cgmath;
 extern crate num_traits;
 
+#[cfg(feature="fnv")]
+extern crate fnv;
+
+#[cfg(feature="rustc-hash")]
+extern crate rustc_hash;
+
+#[cfg(feature="rayon")]
+extern crate rayon;
+
 #[macro_use]
 extern crate log;
 
@@ -13,6 +22,23 @@ use cgmath::prelude::*;
 
 use cgmath::{Point2, Point3, Vector2, Vector3};
 use smallvec::SmallVec;
+
+use std::marker::PhantomData;
+use std::collections::HashSet;
+
+#[cfg(feature="rayon")]
+use rayon::prelude::*;
+
+#[cfg(feature="fnv")]
+use fnv::FnvHasher as Hasher;
+
+#[cfg(feature="rustc-hash")]
+use rustc_hash::FxHasher as Hasher;
+
+#[cfg(not(any(feature="fnv", feature="rustc-hash")))]
+use std::collections::hash_map::DefaultHasher as Hasher;
+
+type BuildHasher = std::hash::BuildHasherDefault<Hasher>;
 
 pub trait MaxAxis<T> {
     fn max_axis(self) -> T;
@@ -141,11 +167,11 @@ where
     }
 }
 
-impl<T> Containment for Bounds<cgmath::Point2<T>>
+impl<T> Containment for Bounds<Point2<T>>
 where
     T: cgmath::BaseNum
 {
-    fn contains(self, other: Bounds<cgmath::Point2<T>>) -> bool {
+    fn contains(self, other: Bounds<Point2<T>>) -> bool {
         self.min.x <= other.min.x &&
         self.min.y <= other.min.y &&
         self.max.x >  other.max.x &&
@@ -153,11 +179,11 @@ where
     }
 }
 
-impl<T> Containment for Bounds<cgmath::Point3<T>>
+impl<T> Containment for Bounds<Point3<T>>
 where
     T: cgmath::BaseNum
 {
-    fn contains(self, other: Bounds<cgmath::Point3<T>>) -> bool {
+    fn contains(self, other: Bounds<Point3<T>>) -> bool {
         self.min.x <= other.min.x &&
         self.min.y <= other.min.y &&
         self.min.z <= other.min.z &&
@@ -215,7 +241,7 @@ where
 ///
 /// The underlying primitive type can be sorted directly if high-bits store origin and low-bits store depth
 
-pub trait SpatialIndex<Point>: Clone + Copy + Default + Ord + std::fmt::Debug
+pub trait SpatialIndex<Point>: Clone + Copy + Default + Ord + Send + std::fmt::Debug
 where
     Point: Copy
 {
@@ -354,18 +380,19 @@ where
 pub struct Layer<Index, ID, Point>
 where
     Index: SpatialIndex<Point>,
+    ID: Ord + std::hash::Hash,
     Point: Copy
 {
-    phantom: std::marker::PhantomData<Point>,
+    phantom: PhantomData<Point>,
     pub tree: Vec<(Index, ID)>,
-    collisions: Vec<(ID, ID)>,
+    collisions: HashSet<(ID, ID), BuildHasher>,
     invalid: Vec<ID>
 }
 
 impl<Index, ID, Point> Layer<Index, ID, Point>
 where
     Index: SpatialIndex<Point>,
-    ID: Copy + Ord + std::fmt::Debug,
+    ID: Copy + Eq + Ord + Send + std::hash::Hash + std::fmt::Debug,
     Point: Copy + EuclideanSpace,
     Point::Diff: cgmath::VectorSpace + MaxAxis<Point::Scalar>,
     Point::Scalar: std::fmt::Debug + num_traits::int::PrimInt + num_traits::NumAssignOps,
@@ -373,18 +400,18 @@ where
 {
     pub fn new() -> Self {
         Self {
-            phantom: std::marker::PhantomData{},
+            phantom: PhantomData{},
             tree: Vec::new(),
-            collisions: Vec::new(),
+            collisions: HashSet::default(),
             invalid: Vec::new()
         }
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            phantom: std::marker::PhantomData{},
+            phantom: PhantomData{},
             tree: Vec::with_capacity(capacity),
-            collisions: Vec::new(),
+            collisions: HashSet::default(),
             invalid: Vec::new()
         }
     }
@@ -424,13 +451,19 @@ where
         }
     }
 
+    #[cfg(feature="rayon")]
+    pub fn sort(&mut self) {
+        self.tree.par_sort_unstable();
+    }
+
+    #[cfg(not(feature="rayon"))]
     pub fn sort(&mut self) {
         self.tree.sort_unstable();
     }
 
-    pub fn detect_collisions<'a>(&'a mut self) -> &'a Vec<(ID, ID)> {
+    pub fn detect_collisions<'a>(&'a mut self) -> &'a HashSet<(ID, ID), BuildHasher> {
         let mut stack: SmallVec<[(Index, ID); 32]> = SmallVec::new();
-        for &(index, id) in self.tree.iter() {
+        for &(index, id) in &self.tree {
             while let Some(&(index_, _)) = stack.last() {
                 if index.overlaps(index_) {
                     break;
@@ -443,13 +476,11 @@ where
                         debug!("duplicate index for entity {:?}", id);
                     }
                 } else {
-                    self.collisions.push((id, id_));
+                    self.collisions.insert((id, id_));
                 }
             }
             stack.push((index, id))
         }
-        self.collisions.sort_unstable();
-        self.collisions.dedup();
         &self.collisions
     }
 }
@@ -499,14 +530,14 @@ mod tests {
     #[test]
     fn normalize_to_system() {
         let system_bounds = Bounds{
-            min: cgmath::Point3::new(-64f32, -64f32, -64f32),
-            max: cgmath::Point3::new( 64f32,  64f32,  64f32)};
+            min: Point3::new(-64f32, -64f32, -64f32),
+            max: Point3::new( 64f32,  64f32,  64f32)};
         let bounds = Bounds{
-            min: cgmath::Point3::new(-32f32, -32f32, -32f32),
-            max: cgmath::Point3::new( 32f32,  32f32,  32f32)};
+            min: Point3::new(-32f32, -32f32, -32f32),
+            max: Point3::new( 32f32,  32f32,  32f32)};
         let expected = Bounds{
-            min: cgmath::Point3::new(0.25f32, 0.25f32, 0.25f32),
-            max: cgmath::Point3::new(0.75f32, 0.75f32, 0.75f32)};
+            min: Point3::new(0.25f32, 0.25f32, 0.25f32),
+            max: Point3::new(0.75f32, 0.75f32, 0.75f32)};
         assert_eq!(bounds.normalize_to_system(system_bounds), expected);
     }
 }
