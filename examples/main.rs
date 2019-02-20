@@ -6,36 +6,40 @@ extern crate ggez;
 extern crate rand;
 extern crate specs;
 
+use cgmath::prelude::*;
 use rand::prelude::*;
 use specs::prelude::*;
-use std::time::Instant;
+
+use broadphase::Bounds;
+use cgmath::{Point2, Point3, Vector2};
+use std::time::{Duration, Instant};
 
 struct Time {
-    current: std::time::Duration,
-    delta: std::time::Duration,
+    current: Duration,
+    delta: Duration,
 }
 
 impl Default for Time {
     fn default() -> Self {
         Self {
-            current: std::time::Duration::default(),
-            delta: std::time::Duration::default(),
+            current: Duration::default(),
+            delta: Duration::default(),
         }
     }
 }
 
 struct CollisionSystemConfig {
     enabled: bool,
-    bounds: broadphase::Bounds<cgmath::Point3<f32>>
+    bounds: Bounds<Point3<f32>>
 }
 
 impl Default for CollisionSystemConfig {
     fn default() -> Self {
         Self{
             enabled: true,
-            bounds: broadphase::Bounds::new(
-                cgmath::Point3::new(0f32, 0f32, 0f32),
-                cgmath::Point3::new(1f32, 1f32, 1f32))}
+            bounds: Bounds::new(
+                Point3::new(0f32, 0f32, 0f32),
+                Point3::new(1f32, 1f32, 1f32))}
     }
 }
 
@@ -43,11 +47,11 @@ impl CollisionSystemConfig {
     fn from_screen_coords(rect: ggez::graphics::Rect) -> Self {
         use cgmath::ElementWise;
         let scale = if rect.w > rect.h { rect.w } else { rect.h };
-        let min = cgmath::Point3::new(rect.x, rect.y, 0f32);
+        let min = Point3::new(rect.x, rect.y, 0f32);
         let max = min.add_element_wise(scale);
         Self{
             enabled: true,
-            bounds: broadphase::Bounds::new(min, max)}
+            bounds: Bounds::new(min, max)}
     }
 }
 
@@ -67,25 +71,20 @@ impl Default for BallCount {
     }
 }
 
-struct Lifetime(std::time::Duration);
+struct Lifetime(Duration);
 
 impl specs::Component for Lifetime {
     type Storage = specs::VecStorage<Self>;
 }
 
-impl From<std::time::Duration> for Lifetime {
-    fn from(expires: std::time::Duration) -> Self {
+impl From<Duration> for Lifetime {
+    fn from(expires: Duration) -> Self {
         Self(expires)
     }
 }
 
 #[derive(Copy, Clone)]
-struct VerletPosition {
-    x0: f32,
-    y0: f32,
-    x1: f32,
-    y1: f32,
-}
+struct VerletPosition(Point2<f32>, Point2<f32>);
 
 impl specs::Component for VerletPosition {
     type Storage = specs::VecStorage<Self>;
@@ -93,12 +92,7 @@ impl specs::Component for VerletPosition {
 
 impl From<(f32, f32)> for VerletPosition {
     fn from(pos: (f32, f32)) -> Self {
-        Self {
-            x0: pos.0,
-            y0: pos.1,
-            x1: pos.0,
-            y1: pos.1,
-        }
+        Self(pos.into(), pos.into())
     }
 }
 
@@ -150,7 +144,7 @@ impl<'a> specs::System<'a> for Lifecycle {
         }
 
         while ball_count.0 < 1500 {
-            let lifetime = std::time::Duration::from_millis(rand::thread_rng().gen_range(5000, 30000));
+            let lifetime = Duration::from_millis(rand::thread_rng().gen_range(5000, 30000));
 
             let r = rand::thread_rng().gen_range(1f32, 3f32).exp();
 
@@ -185,33 +179,25 @@ impl<'a> specs::System<'a> for Kinematics {
         let dt = (time.delta.as_secs() as f32) + (time.delta.subsec_micros() as f32) / 1_000_000f32;
         let gravity = 300f32 * dt * dt;
         for mut pos in (&mut positions).join() {
-            let x0 = pos.x0;
-            let y0 = pos.y0;
-            let x1 = pos.x1;
-            let y1 = pos.y1;
-            let x2 = 2f32 * x1 - x0;
-            let y2 = 2f32 * y1 - y0 + gravity;
-            pos.x1 = x2;
-            pos.y1 = y2;
-            pos.x0 = x1;
-            pos.y0 = y1;
+            let mut pos_2 = pos.1 + (pos.1 - pos.0);
+            pos_2.y += gravity;
+            pos.0 = pos.1;
+            pos.1 = pos_2;
         }
         for mut pos in (&mut positions).join() {
-            let dx = pos.x1 - pos.x0;
-            let dy = pos.y1 - pos.y0;
-            let d = (dx * dx + dy * dy).sqrt();
+            let velocity = pos.1 - pos.0;
+            let speed = velocity.magnitude();
             const SPEED_LIMIT: f32 = 1f32;
-            if d > SPEED_LIMIT {
-                pos.x1 = pos.x0 + SPEED_LIMIT * dx / d;
-                pos.y1 = pos.y0 + SPEED_LIMIT * dy / d;
+            if speed > SPEED_LIMIT {
+                pos.1 = pos.0 + SPEED_LIMIT * velocity / speed;
             }
         }
     }
 }
 
 struct Collisions {
-    system: broadphase::Layer<broadphase::Index64_3D, specs::Entity, cgmath::Point3<u32>>,
-    collisions: Vec<(specs::Entity, specs::Entity, (f32, f32))>,
+    system: broadphase::Layer<broadphase::Index64_3D, specs::Entity, Point3<u32>>,
+    collisions: Vec<(specs::Entity, specs::Entity, Vector2<f32>)>,
 }
 
 impl Collisions {
@@ -243,9 +229,9 @@ impl<'a> specs::System<'a> for Collisions {
             self.system.extend(collision_config.bounds,
                 (&entities, &positions, &radii).join()
                     .map(|(ent, &pos, &Radius(r))| {
-                        let bounds = broadphase::Bounds{
-                            min: cgmath::Point3::new(pos.x1 - r, pos.y1 - r, 0.0f32),
-                            max: cgmath::Point3::new(pos.x1 + r, pos.y1 + r, 0.0f32)};
+                        let bounds = Bounds{
+                            min: Point3::new(pos.1.x - r, pos.1.y - r, 0.0f32),
+                            max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
                         (bounds, ent)}));
             self.system.sort();
 
@@ -256,18 +242,16 @@ impl<'a> specs::System<'a> for Collisions {
                     let pos1 = positions.get(ent1).unwrap();
                     let Radius(r0) = radii.get(ent0).unwrap();
                     let Radius(r1) = radii.get(ent1).unwrap();
-                    let dx = pos1.x1 - pos0.x1;
-                    let dy = pos1.y1 - pos0.y1;
-                    let dist = (dx * dx + dy * dy).sqrt();
+                    let offset = pos1.1 - pos0.1;
+                    let dist = offset.magnitude();
                     let dist_min = r0 + r1;
 
                     if dist > dist_min {
                         None
                     } else {
                         let d = dist_min - dist;
-                        let nx = dx / dist;
-                        let ny = dy / dist;
-                        Some((ent0, ent1, (nx * d / 2f32, ny * d / 2f32)))
+                        let n = offset / dist;
+                        Some((ent0, ent1, n * d / 2f32))
                     }})
                 .collect();
         } else {
@@ -278,34 +262,24 @@ impl<'a> specs::System<'a> for Collisions {
                         continue;
                     }
 
-                    let dx = pos1.x1 - pos0.x1;
-                    let dy = pos1.y1 - pos0.y1;
-                    let dist = (dx * dx + dy * dy).sqrt();
+                    let offset = pos1.1 - pos0.1;
+                    let dist = offset.magnitude();
                     let dist_min = r0 + r1;
 
                     if dist < dist_min {
                         let d = dist_min - dist;
-                        let nx = dx / dist;
-                        let ny = dy / dist;
+                        let n = offset / dist;
                         self.collisions
-                            .push((ent0, ent1, (nx * d / 2f32, ny * d / 2f32)));
+                            .push((ent0, ent1, n * d / 2f32));
                     }
                 }
             }
         }
         print!("elapsed: {}    \r", start.elapsed().subsec_micros());
 
-        for &(ent0, ent1, (dx, dy)) in &self.collisions {
-            {
-                let pos = positions.get_mut(ent0).unwrap();
-                pos.x1 -= dx;
-                pos.y1 -= dy;
-            }
-            {
-                let pos = positions.get_mut(ent1).unwrap();
-                pos.x1 += dx;
-                pos.y1 += dy;
-            }
+        for &(ent0, ent1, v) in &self.collisions {
+            positions.get_mut(ent0).unwrap().1 -= v;
+            positions.get_mut(ent1).unwrap().1 += v;
         }
 
         let x_min = screen_coords.0.x;
@@ -314,17 +288,17 @@ impl<'a> specs::System<'a> for Collisions {
         let y_max = screen_coords.0.h + y_min - 1f32;
 
         for (mut pos, &Radius(r)) in (&mut positions, &radii).join() {
-            if pos.x1 - r < x_min {
-                pos.x1 = x_min + r
+            if pos.1.x - r < x_min {
+                pos.1.x = x_min + r
             }
-            if pos.y1 - r < y_min {
-                pos.y1 = y_min + r
+            if pos.1.y - r < y_min {
+                pos.1.y = y_min + r
             }
-            if pos.x1 + r > x_max {
-                pos.x1 = x_max - r
+            if pos.1.x + r > x_max {
+                pos.1.x = x_max - r
             }
-            if pos.y1 + r > y_max {
-                pos.y1 = y_max - r
+            if pos.1.y + r > y_max {
+                pos.1.y = y_max - r
             }
         }
     }
@@ -360,7 +334,7 @@ impl ggez::event::EventHandler for GameState {
         self.world.maintain();
 
         self.world.write_resource::<Time>().delta =
-            std::time::Duration::from_micros(Self::FRAME_TIME_US as u64);
+            Duration::from_micros(Self::FRAME_TIME_US as u64);
         while ggez::timer::check_update_time(context, Self::FRAME_RATE) {
             self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
             self.kinematics.run_now(&self.world.res);
@@ -402,10 +376,8 @@ impl ggez::event::EventHandler for GameState {
             while let Some(_) = iter.peek() {
                 let mut mesh_builder = MeshBuilder::new();
                 for (&pos, &Radius(r)) in iter.take(500) {
-                    let x = (pos.x1 - pos.x0) * u + pos.x1;
-                    let y = (pos.y1 - pos.y0) * u + pos.y1;
-
-                    mesh_builder.circle(DrawMode::stroke(1f32), [x, y], r, 1f32, Color::new(1f32, 0.5f32, 0f32, 1f32));
+                    let pos_ = pos.1 + (pos.1 - pos.0) * u;
+                    mesh_builder.circle::<[f32; 2]>(DrawMode::stroke(1f32), pos_.into(), r, 1f32, Color::new(1f32, 0.5f32, 0f32, 1f32));
                 }
                 let mesh = mesh_builder.build(context)?;
                 draw(context, &mesh, ([0f32, 0f32],))?;
