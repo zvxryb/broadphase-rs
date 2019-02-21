@@ -5,10 +5,14 @@
 ## Overview
 
 broadphase-rs is a, creatively named, broadphase collision detection library in Rust.  It transforms object bounds
-into a lightweight spatial index representation, a single integer.  This index can be sorted directly to produce a
-topological ordering, after which full-system collision detection is accomplished by a single pass over the sorted
-list with only a minimal auxiliary stack necessary to maintain state.  Collision tests between indices are accomplished
-with simple bitwise shifts, masks, and XORs.
+into a lightweight spatial index representation, a single integer.  A vector of such indices is sorted directly to
+yield a result which is a topologically-sorted Morton order, after which full-system collision detection can be
+accomplished by a single pass over the sorted list with only a minimal auxiliary stack necessary to maintain state.
+Collision tests between indices are accomplished with simple bitwise shifts, masks, and XORs.
+
+This method is capable of supporting objects of varying scale (unlike uniform grids), while having a straightforward,
+non-hierarchical structure in memory (unlike quad- or oct-trees), as the entire representation exists in a single
+vector of index/object pairs.
 
 ## Usage
 
