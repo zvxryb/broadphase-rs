@@ -386,7 +386,7 @@ impl ggez::event::EventHandler for GameState {
                 let mut mesh_builder = MeshBuilder::new();
                 for (&pos, &Radius(r)) in iter.take(500) {
                     let pos_ = pos.1 + (pos.1 - pos.0) * u;
-                    mesh_builder.circle::<[f32; 2]>(DrawMode::stroke(1f32), pos_.into(), r, 1f32, Color::new(1f32, 0.5f32, 0f32, 1f32));
+                    mesh_builder.circle::<[f32; 2]>(DrawMode::stroke(1.5f32), pos_.into(), r, 0.7f32, Color::new(1f32, 0.5f32, 0f32, 1f32));
                 }
                 let mesh = mesh_builder.build(context)?;
                 draw(context, &mesh, ([0f32, 0f32],))?;
@@ -410,7 +410,7 @@ impl ggez::event::EventHandler for GameState {
                         scale.y * origin.y + offset.y,
                         scale.x * size,
                         scale.y * size);
-                    mesh_builder.rectangle(DrawMode::stroke(1f32), rect, Color::new(0.3f32, 0.3f32, 0.3f32, 1f32));
+                    mesh_builder.rectangle(DrawMode::stroke(1.5f32), rect, Color::new(0.3f32, 0.3f32, 0.3f32, 1f32));
                 }
                 let mesh = mesh_builder.build(context)?;
                 draw(context, &mesh, ([0f32, 0f32],))?;
@@ -424,12 +424,14 @@ impl ggez::event::EventHandler for GameState {
 }
 
 fn main() {
+    use ggez::conf::*;
     let (mut context, mut event_loop) = ggez::ContextBuilder::new("broadphase_demo", "zvxryb")
         .window_setup(
-            ggez::conf::WindowSetup::default()
-                .title("broadphase demo"))
+            WindowSetup::default()
+                .title("broadphase demo")
+                .samples(NumSamples::Eight))
         .window_mode(
-            ggez::conf::WindowMode::default()
+            WindowMode::default()
                 .dimensions(1280f32, 720f32))
         .build()
         .expect("failed to build ggez context");
