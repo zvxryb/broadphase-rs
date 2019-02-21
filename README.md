@@ -32,4 +32,9 @@ self.system.extend(collision_config.bounds,
             (bounds, ent.id())}));
 
 self.collisions = self.system.detect_collisions()
+    .iter()
+    .filter_map(|&(id0, id1)| {
+        // ...narrow-phase...
+    })
+    .collect();
 ```
