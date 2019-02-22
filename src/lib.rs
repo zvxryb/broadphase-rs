@@ -23,7 +23,6 @@ use cgmath::prelude::*;
 use cgmath::{Point2, Point3, Vector2, Vector3};
 use smallvec::SmallVec;
 
-use std::marker::PhantomData;
 use std::collections::HashSet;
 
 #[cfg(feature="rayon")]
@@ -241,17 +240,18 @@ where
 ///
 /// The underlying primitive type can be sorted directly if high-bits store origin and low-bits store depth
 
-pub trait SpatialIndex<Point>: Clone + Copy + Default + Ord + Send + std::fmt::Debug
-where
-    Point: Copy
-{
+pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
+    type Point;
+
     fn clamp_depth(u32) -> u32;
-    fn origin(self) -> Point;
+    fn origin(self) -> Self::Point;
     fn depth(self) -> u32;
-    fn set_origin(self, Point) -> Self;
+    fn set_origin(self, Self::Point) -> Self;
     fn set_depth(self, u32) -> Self;
     fn overlaps(self, other: Self) -> bool;
 }
+
+/// 64-bit 3D index; provides 19 bits' precision per axis
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Index64_3D(u64);
@@ -304,7 +304,9 @@ impl Index64_3D {
     }
 }
 
-impl SpatialIndex<Point3<u32>> for Index64_3D {
+impl SpatialIndex for Index64_3D {
+    type Point = Point3<u32>;
+
     fn clamp_depth(depth: u32) -> u32 {
         std::cmp::min(depth, Self::ORIGIN_BITS)
     }
@@ -351,7 +353,7 @@ impl SpatialIndex<Point3<u32>> for Index64_3D {
 impl<Scalar, Index> LevelIndexBounds<Index> for Bounds<Point3<Scalar>>
 where
     Scalar: num_traits::NumAssign + num_traits::PrimInt + Truncate + std::fmt::Debug,
-    Index: SpatialIndex<Point3<Scalar>>
+    Index: SpatialIndex<Point = Point3<Scalar>>
 {
     type Output = SmallVec<[Index; 8]>;
     fn indices(self) -> Self::Output {
@@ -377,30 +379,27 @@ where
 }
 
 #[derive(Clone, Default)]
-pub struct Layer<Index, ID, Point>
+pub struct Layer<Index, ID>
 where
-    Index: SpatialIndex<Point>,
-    ID: Ord + std::hash::Hash,
-    Point: Copy
+    Index: SpatialIndex,
+    ID: Ord + std::hash::Hash
 {
-    phantom: PhantomData<Point>,
     pub tree: (Vec<(Index, ID)>, bool),
     collisions: HashSet<(ID, ID), BuildHasher>,
     invalid: Vec<ID>
 }
 
-impl<Index, ID, Point> Layer<Index, ID, Point>
+impl<Index, ID> Layer<Index, ID>
 where
-    Index: SpatialIndex<Point>,
+    Index: SpatialIndex,
     ID: Copy + Eq + Ord + Send + std::hash::Hash + std::fmt::Debug,
-    Point: Copy + EuclideanSpace,
-    Point::Diff: cgmath::VectorSpace + MaxAxis<Point::Scalar>,
-    Point::Scalar: std::fmt::Debug + num_traits::int::PrimInt + num_traits::NumAssignOps,
-    Bounds<Point>: LevelIndexBounds<Index>
+    Index::Point: Copy + EuclideanSpace,
+    <Index::Point as EuclideanSpace>::Diff: cgmath::VectorSpace + MaxAxis<<Index::Point as EuclideanSpace>::Scalar>,
+    <Index::Point as EuclideanSpace>::Scalar: std::fmt::Debug + num_traits::int::PrimInt + num_traits::NumAssignOps,
+    Bounds<Index::Point>: LevelIndexBounds<Index>
 {
     pub fn new() -> Self {
         Self {
-            phantom: PhantomData{},
             tree: (Vec::new(), true),
             collisions: HashSet::default(),
             invalid: Vec::new()
@@ -409,7 +408,6 @@ where
 
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            phantom: PhantomData{},
             tree: (Vec::with_capacity(capacity), true),
             collisions: HashSet::default(),
             invalid: Vec::new()
@@ -431,7 +429,7 @@ where
         Point_::Scalar: cgmath::BaseFloat,
         Point_::Diff: ElementWise,
         Scalar_: std::fmt::Debug + num_traits::NumAssignOps,
-        Bounds<Point_>: Containment + Quantize + QuantizeResult<Quantized = Bounds<Point>>
+        Bounds<Point_>: Containment + Quantize + QuantizeResult<Quantized = Bounds<Index::Point>>
     {
         let (tree, sorted) = &mut self.tree;
 
@@ -458,7 +456,7 @@ where
         }
     }
 
-    pub fn merge(&mut self, other: &Layer<Index, ID, Point>) {
+    pub fn merge(&mut self, other: &Layer<Index, ID>) {
         let (lhs_tree, sorted) = &mut self.tree;
         let (rhs_tree, _) = &other.tree;
 

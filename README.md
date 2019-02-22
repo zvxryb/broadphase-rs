@@ -20,7 +20,7 @@ From the included example:
 
 ```Rust
 struct Collisions {
-    system: broadphase::Layer<broadphase::Index64_3D, specs::world::Index, Point3<u32>>,
+    system: broadphase::Layer<broadphase::Index64_3D, specs::world::Index>,
     collisions: Vec<(specs::Entity, specs::Entity, f32, Vector2<f32>)>,
 }
 
