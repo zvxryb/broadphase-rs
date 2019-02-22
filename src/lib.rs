@@ -39,7 +39,7 @@ use std::collections::hash_map::DefaultHasher as Hasher;
 
 type BuildHasher = std::hash::BuildHasherDefault<Hasher>;
 
-pub trait MaxAxis<T> {
+trait MaxAxis<T> {
     fn max_axis(self) -> T;
 }
 
@@ -90,12 +90,16 @@ pub trait Truncate {
     fn truncate(self, bits: u32) -> Self;
 }
 
-impl Truncate for u32 {
+impl<T> Truncate for T
+where
+    T: num_traits::PrimInt + num_traits::Unsigned + std::ops::Shl<u32, Output = Self> + Sized
+{
     fn truncate(self, bits: u32) -> Self {
+        let total_bits = 8 * (std::mem::size_of::<T>() as u32);
         if bits == 0 {
             self
         } else {
-            self & !((1u32 << (32 - bits)) - 1u32)
+            self & !((Self::one() << (total_bits - bits)) - Self::one())
         }
     }
 }
@@ -394,7 +398,7 @@ where
     Index: SpatialIndex,
     ID: Copy + Eq + Ord + Send + std::hash::Hash + std::fmt::Debug,
     Index::Point: Copy + EuclideanSpace,
-    <Index::Point as EuclideanSpace>::Diff: cgmath::VectorSpace + MaxAxis<<Index::Point as EuclideanSpace>::Scalar>,
+    <Index::Point as EuclideanSpace>::Diff: cgmath::VectorSpace,
     <Index::Point as EuclideanSpace>::Scalar: std::fmt::Debug + num_traits::int::PrimInt + num_traits::NumAssignOps,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
