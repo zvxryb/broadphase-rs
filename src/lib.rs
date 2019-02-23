@@ -1,5 +1,48 @@
 // mlodato, 20190221
 
+//! # Overview
+//! 
+//! broadphase-rs is a broadphase collision detection library.  It transforms object bounds into a lightweight
+//! spatial index representation.  These indices are integer values which are sorted directly to yield a
+//! result which is a topologically-sorted Morton order, after which full-system collision detection can be
+//! accomplished by a single pass over the sorted list with only a minimal auxiliary stack necessary to maintain
+//! state.  Collision tests between indices are accomplished with simple bitwise shifts, masks, and XORs.
+//! 
+//! This method is capable of supporting objects of varying scale (unlike uniform grids), while having a
+//! straightforward, non-hierarchical structure in memory (unlike quad- or oct-trees), as the entire
+//! representation exists in a single vector of index/object pairs.
+//! 
+//! # Usage
+//! 
+//! [`Layer`]: struct.Layer.html
+//! 
+//! [`Layer`] is the "main" struct of broadphase &mdash; this is where the sorted list of
+//! spatial indices is stored.
+//! 
+//! The usual sequence of operations on a [`Layer`] is as follows:
+//! 
+//! ```rust
+//! extern crate broadphase;
+//! 
+//! use broadphase::{Bounds, Layer, Index64_3D};
+//! type ID = u64;
+//! 
+//! // ...
+//! 
+//! let mut layer: Layer<Index64_3D, ID> = Layer::new();
+//! 
+//! // ...
+//! 
+//! // clears all internal state:
+//! layer.clear();
+//! 
+//! // appends an iterator of object bounds-ID pairs to the layer:
+//! layer.extend(system_bounds, objects);
+//! 
+//! // scans the layer for collisions:
+//! let potential_collisions = layer.detect_collisions();
+//! ```
+
 extern crate cgmath;
 extern crate num_traits;
 
@@ -71,6 +114,7 @@ where
     }
 }
 
+/// A trait for casting between types
 pub trait Cast<T> {
     fn cast(self) -> Option<T>;
 }
@@ -95,6 +139,7 @@ where
     }
 }
 
+/// A trait for truncating values to a specified level of precision
 pub trait Truncate {
     fn truncate(self, bits: u32) -> Self;
 }
@@ -113,10 +158,12 @@ where
     }
 }
 
+/// Used to verify that an object's bounds are fully contained within the system bounds
 pub trait Containment<RHS = Self> {
     fn contains(self, other: RHS) -> bool;
 }
 
+/// The result of a "quantization" (float to normalized int) operation
 pub trait QuantizeResult {
     type Quantized;
 }
@@ -129,9 +176,14 @@ impl QuantizeResult for f64 {
     type Quantized = u64;
 }
 
+/// Conversion from floating-point to normalized integer representation
 pub trait Quantize : QuantizeResult {
     fn quantize(self) -> Option<Self::Quantized>;
 }
+
+/// The set of indices for an object with known bounds
+/// 
+/// Index `depth` is chosen such that this returns no more than 4 (2D) or 8 (3D) indices
 
 pub trait LevelIndexBounds<Index>
 where
@@ -141,6 +193,9 @@ where
     fn indices(self) -> Self::Output;
 }
 
+/// An axis-aligned bounding box
+/// 
+/// This is used in public interfaces, as a means to obtain information necessary to generate indices.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Bounds<Point> {
     pub min: Point,
@@ -274,6 +329,14 @@ where
     }
 }
 
+/// [`SpatialIndex`]: trait.SpatialIndex.html
+/// [`Index64_3D`]: trait.Index64_3D.html
+
+/// A group of collision data
+/// 
+/// `Index` be a type implmenting [`SpatialIndex`], such as [`Index64_3D`]
+/// `ID` is the type representing object IDs
+
 #[derive(Clone, Default)]
 pub struct Layer<Index, ID>
 where
@@ -294,6 +357,7 @@ where
     <Index::Point as EuclideanSpace>::Scalar: std::fmt::Debug + num_traits::int::PrimInt + num_traits::NumAssignOps,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
+    /// Instantiate an empty `Layer`
     pub fn new() -> Self {
         Self {
             tree: (Vec::new(), true),
@@ -302,14 +366,7 @@ where
         }
     }
 
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            tree: (Vec::with_capacity(capacity), true),
-            collisions: HashSet::default(),
-            invalid: Vec::new()
-        }
-    }
-
+    /// Clear all internal state
     pub fn clear(&mut self) {
         let (tree, sorted) = &mut self.tree;
         tree.clear();
@@ -318,6 +375,7 @@ where
         self.invalid.clear();
     }
 
+    /// Append multiple objects to the `Layer`
     pub fn extend<Iter, Point_, Scalar_>(&mut self, system_bounds: Bounds<Point_>, objects: Iter)
     where
         Iter: std::iter::Iterator<Item = (Bounds<Point_>, ID)>,
@@ -352,6 +410,10 @@ where
         }
     }
 
+    /// Merge another `Layer` into this `Layer`
+    /// 
+    /// This may be used, for example, to merge static scene `Layer` into the current
+    /// frames' dynamic `Layer` without having to recalculate indices for the static data
     pub fn merge(&mut self, other: &Layer<Index, ID>) {
         let (lhs_tree, sorted) = &mut self.tree;
         let (rhs_tree, _) = &other.tree;
@@ -379,12 +441,18 @@ where
         }
     }
 
+    /// Detects collisions between all objects in the `Layer`
     pub fn detect_collisions<'a>(&'a mut self)
         -> &'a HashSet<(ID, ID), BuildHasher>
     {
         self.detect_collisions_filtered(|_, _| true)
     }
 
+    /// Detects collisions between all objects in the `Layer`, returning only those which pass a user-specified test
+    /// 
+    /// Collisions are filtered prior to duplicate removal.  This may be faster or slower than filtering
+    /// post-duplicate-removal (i.e. by `detect_collisions().iter().filter()`) depending on the complexity
+    /// of the filter.
     pub fn detect_collisions_filtered<'a, F>(&'a mut self, mut filter: F)
         -> &'a HashSet<(ID, ID), BuildHasher>
     where

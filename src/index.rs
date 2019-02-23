@@ -2,12 +2,19 @@
 
 use cgmath::Point3;
 
-/// Two properties are required to ensure that sorting indices produces a topological ordering:
+/// An index representing an object's position and scale
+/// 
+/// The `Ord` trait must be implemented such that sorting produces a topological ordering.
+/// 
+/// This may be accomplished using trivial comparison operators for a primitive integer type by:
 ///
-/// 1. `self.origin()` should represent the lower bound for the node at `self.depth()`
-/// 2. `self.depth()` should be less significant than origin for ordering
-///
-/// The underlying primitive type can be sorted directly if high-bits store origin and low-bits store depth
+/// 1. Packing bits such that `origin` is higher-significance than `depth`
+/// 2. Storing the value of `origin` as a Morton code
+/// 3. Truncating `origin` bits to the level specified by `depth`, such that it represents the _minimum bound_
+///    of the cell at the given scale
+/// 
+/// Currently, requirement #3 (truncating origin) is not the responsibility of the particular `SpatialIndex`
+/// implementation &mdash; an appropriately-truncated value must be passed as an argument to `set_origin`
 
 pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
     type Point;
@@ -20,7 +27,7 @@ pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
     fn overlaps(self, other: Self) -> bool;
 }
 
-/// 64-bit 3D index; provides 19 bits' precision per axis
+/// A 64-bit 3D index which provides 19 bits' precision per axis
 
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Index64_3D(u64);
