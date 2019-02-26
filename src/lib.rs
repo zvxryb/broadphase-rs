@@ -313,16 +313,20 @@ where
         let min = self.min.map(|scalar| scalar.truncate(depth));
         let max = self.max.map(|scalar| scalar.truncate(depth));
 
-        let mut level_bounds: SmallVec<[Point3<Scalar>; 8]> = smallvec![
-            Point3::new(min.x, min.y, min.z),
-            Point3::new(max.x, min.y, min.z),
-            Point3::new(min.x, max.y, min.z),
-            Point3::new(max.x, max.y, min.z),
-            Point3::new(min.x, min.y, max.z),
-            Point3::new(max.x, min.y, max.z),
-            Point3::new(min.x, max.y, max.z),
-            Point3::new(max.x, max.y, max.z)];
-        level_bounds.dedup();
+        let mask =
+             ((min.x != max.x) as u32)       |
+            (((min.y != max.y) as u32) << 1) |
+            (((min.z != max.z) as u32) << 2);
+
+        let mut level_bounds: SmallVec<[Point3<Scalar>; 8]> = SmallVec::new();
+        if (mask & 0b000) == 0 { level_bounds.push(Point3::new(min.x, min.y, min.z)); }
+        if (mask & 0b001) == 1 { level_bounds.push(Point3::new(max.x, min.y, min.z)); }
+        if (mask & 0b010) == 1 { level_bounds.push(Point3::new(min.x, max.y, min.z)); }
+        if (mask & 0b011) == 2 { level_bounds.push(Point3::new(max.x, max.y, min.z)); }
+        if (mask & 0b100) == 1 { level_bounds.push(Point3::new(min.x, min.y, max.z)); }
+        if (mask & 0b101) == 2 { level_bounds.push(Point3::new(max.x, min.y, max.z)); }
+        if (mask & 0b110) == 2 { level_bounds.push(Point3::new(min.x, max.y, max.z)); }
+        if (mask & 0b111) == 3 { level_bounds.push(Point3::new(max.x, max.y, max.z)); }
         level_bounds.into_iter()
             .map(|origin| Index::default().set_depth(depth).set_origin(origin))
             .collect()
