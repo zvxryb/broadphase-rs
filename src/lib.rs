@@ -23,15 +23,17 @@
 //! 
 //! ```rust
 //! extern crate broadphase;
+//! # extern crate cgmath;
 //! 
-//! use broadphase::{Bounds, Layer, Index64_3D};
+//! use broadphase::{Bounds, Layer, LayerBuilder, Index64_3D};
 //! type ID = u64;
 //! 
-//! // ...
-//! 
+//! # use cgmath::Point3;
+//! # fn doc_main<Iter>(system_bounds: Bounds<Point3<f32>>, objects: Iter)
+//! # where
+//! #     Iter: Iterator<Item = (Bounds<Point3<f32>>, ID)>
+//! # {
 //! let mut layer: Layer<Index64_3D, ID> = LayerBuilder::new().build();
-//! 
-//! // ...
 //! 
 //! // clears all internal state:
 //! layer.clear();
@@ -41,6 +43,7 @@
 //! 
 //! // scans the layer for collisions:
 //! let potential_collisions = layer.detect_collisions();
+//! # }
 //! ```
 
 extern crate cgmath;
