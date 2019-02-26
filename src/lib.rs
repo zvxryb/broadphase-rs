@@ -70,9 +70,12 @@ extern crate smallvec;
 use cgmath::prelude::*;
 
 use cgmath::{Point2, Point3, Vector2, Vector3};
+use num_traits::{NumAssignOps, NumCast, PrimInt, Unsigned};
 use smallvec::SmallVec;
 
 use std::collections::HashSet;
+use std::fmt::Debug;
+use std::ops::Shl;
 
 #[cfg(feature="rayon")]
 use rayon::prelude::*;
@@ -121,8 +124,8 @@ pub trait Cast<T> {
 
 impl<T, U> Cast<Point2<T>> for Point2<U>
 where
-    T: num_traits::NumCast,
-    U: num_traits::NumCast + Copy
+    T: NumCast,
+    U: NumCast + Copy
 {
     fn cast(self) -> Option<Point2<T>> {
         Point2::cast(&self)
@@ -131,30 +134,23 @@ where
 
 impl<T, U> Cast<Point3<T>> for Point3<U>
 where
-    T: num_traits::NumCast,
-    U: num_traits::NumCast + Copy
+    T: NumCast,
+    U: NumCast + Copy
 {
     fn cast(self) -> Option<Point3<T>> {
         Point3::cast(&self)
     }
 }
 
-/// A trait for truncating values to a specified level of precision
-pub trait Truncate {
-    fn truncate(self, bits: u32) -> Self;
-}
-
-impl<T> Truncate for T
+fn truncate<T>(x: T, bits: u32) -> T
 where
-    T: num_traits::PrimInt + num_traits::Unsigned + std::ops::Shl<u32, Output = Self> + Sized
+    T: PrimInt + Unsigned + Shl<u32, Output = T> + Sized
 {
-    fn truncate(self, bits: u32) -> Self {
-        let total_bits = 8 * (std::mem::size_of::<T>() as u32);
-        if bits == 0 {
-            self
-        } else {
-            self & !((Self::one() << (total_bits - bits)) - Self::one())
-        }
+    let total_bits = 8 * (std::mem::size_of::<T>() as u32);
+    if bits == 0 {
+        x
+    } else {
+        x & !((T::one() << (total_bits - bits)) - T::one())
     }
 }
 
@@ -190,7 +186,9 @@ where
     Self::Output: IntoIterator<Item = Index>
 {
     type Output;
+
     fn indices(self) -> Self::Output;
+    fn indices_at_depth(self, depth: u32) -> Self::Output;
 }
 
 /// An axis-aligned bounding box
@@ -263,7 +261,7 @@ where
 impl<Scalar> QuantizeResult for Point2<Scalar>
 where 
     Scalar: cgmath::BaseFloat + QuantizeResult,
-    Scalar::Quantized: num_traits::int::PrimInt
+    Scalar::Quantized: PrimInt
 {
     type Quantized = Point2<Scalar::Quantized>;
 }
@@ -271,7 +269,7 @@ where
 impl<Scalar> QuantizeResult for Point3<Scalar>
 where 
     Scalar: cgmath::BaseFloat + QuantizeResult,
-    Scalar::Quantized: num_traits::int::PrimInt
+    Scalar::Quantized: PrimInt
 {
     type Quantized = Point3<Scalar::Quantized>;
 }
@@ -288,7 +286,7 @@ where
     Point: cgmath::EuclideanSpace<Scalar = Scalar> + cgmath::ElementWise<Scalar> + QuantizeResult + Cast<<Point as QuantizeResult>::Quantized>,
     <Point as QuantizeResult>::Quantized: ElementWise<Scalar::Quantized>,
     Scalar: cgmath::BaseFloat + QuantizeResult,
-    Scalar::Quantized: num_traits::int::PrimInt + num_traits::NumCast
+    Scalar::Quantized: PrimInt + NumCast
 {
     fn quantize(self) -> Option<Self::Quantized> {
         let min_value = Scalar::from(Scalar::Quantized::min_value())?;
@@ -303,15 +301,20 @@ where
 
 impl<Scalar, Index> LevelIndexBounds<Index> for Bounds<Point3<Scalar>>
 where
-    Scalar: num_traits::NumAssign + num_traits::PrimInt + Truncate + std::fmt::Debug,
+    Scalar: NumAssignOps + PrimInt + Unsigned + Shl<u32, Output = Scalar> + Debug,
     Index: SpatialIndex<Point = Point3<Scalar>>
 {
     type Output = SmallVec<[Index; 8]>;
+
     fn indices(self) -> Self::Output {
         let max_axis = self.size().max_axis();
         let depth = Index::clamp_depth((max_axis - Scalar::one()).leading_zeros());
-        let min = self.min.map(|scalar| scalar.truncate(depth));
-        let max = self.max.map(|scalar| scalar.truncate(depth));
+        self.indices_at_depth(depth)
+    }
+
+    fn indices_at_depth(self, depth: u32) -> Self::Output {
+        let min = self.min.map(|scalar| truncate(scalar, depth));
+        let max = self.max.map(|scalar| truncate(scalar, depth));
 
         let mask =
              ((min.x != max.x) as u32)       |
@@ -355,10 +358,10 @@ where
 impl<Index, ID> Layer<Index, ID>
 where
     Index: SpatialIndex,
-    ID: Copy + Eq + Ord + Send + std::hash::Hash + std::fmt::Debug,
+    ID: Copy + Eq + Ord + Send + std::hash::Hash + Debug,
     Index::Point: Copy + EuclideanSpace,
     <Index::Point as EuclideanSpace>::Diff: cgmath::VectorSpace,
-    <Index::Point as EuclideanSpace>::Scalar: std::fmt::Debug + num_traits::int::PrimInt + num_traits::NumAssignOps,
+    <Index::Point as EuclideanSpace>::Scalar: Debug + NumAssignOps + PrimInt,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
     /// Instantiate an empty `Layer`
@@ -389,7 +392,7 @@ where
         Point_: EuclideanSpace<Scalar = Scalar_>,
         Point_::Scalar: cgmath::BaseFloat,
         Point_::Diff: ElementWise,
-        Scalar_: std::fmt::Debug + num_traits::NumAssignOps,
+        Scalar_: Debug + NumAssignOps,
         Bounds<Point_>: Containment + Quantize + QuantizeResult<Quantized = Bounds<Index::Point>>
     {
         let (tree, sorted) = &mut self.tree;
