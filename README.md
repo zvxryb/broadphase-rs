@@ -1,4 +1,4 @@
-# broadphase-rs
+# broadphase-rs [![Build Status](https://travis-ci.org/zvxryb/broadphase-rs.svg?branch=master)](https://travis-ci.org/zvxryb/broadphase-rs)
 
 ![Collision Grid](docs/images/example_with_grid.png)
 
