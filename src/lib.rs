@@ -553,7 +553,7 @@ impl LayerBuilder {
     }
 
     pub fn with_min_depth(&mut self, depth: u32) -> &mut Self {
-        self.min_depth = 0;
+        self.min_depth = depth;
         self
     }
 
