@@ -7,6 +7,7 @@ addons:
   apt:
     packages:
       - libasound2-dev
+      - libudev-dev
 cache: cargo
 matrix:
   allow_failures:
