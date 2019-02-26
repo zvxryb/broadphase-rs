@@ -390,7 +390,8 @@ where
 
 /// A group of collision data
 /// 
-/// `Index` be a type implmenting [`SpatialIndex`], such as [`Index64_3D`]
+/// `Index` must be a type implmenting [`SpatialIndex`], such as [`Index64_3D`]
+/// 
 /// `ID` is the type representing object IDs
 
 #[derive(Clone, Default)]
@@ -539,7 +540,7 @@ where
     }
 }
 
-/// A builder for [`Layer`]s
+/// A builder for `Layer`s
 pub struct LayerBuilder {
     min_depth: u32,
     index_capacity: Option<usize>,
