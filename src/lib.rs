@@ -396,7 +396,7 @@ where
     Index: SpatialIndex,
     ID: Ord + std::hash::Hash
 {
-    min_depth: Option<u32>,
+    min_depth: u32,
     pub tree: (Vec<(Index, ID)>, bool),
     collisions: HashSet<(ID, ID), BuildHasherImpl>,
     invalid: Vec<ID>
@@ -449,7 +449,7 @@ where
                 .normalize_to_system(system_bounds)
                 .quantize()
                 .expect("failed to filter bounds outside system")
-                .indices(self.min_depth)
+                .indices(Some(self.min_depth))
                 .into_iter()
                 .map(|index| (index, id)));
 
@@ -464,6 +464,11 @@ where
     pub fn merge(&mut self, other: &Layer<Index, ID>) {
         let (lhs_tree, sorted) = &mut self.tree;
         let (rhs_tree, _) = &other.tree;
+
+        if other.min_depth < self.min_depth {
+            warn!("merging layer of lesser min_depth (lhs: {}, rhs: {})", self.min_depth, other.min_depth);
+            self.min_depth = other.min_depth;
+        }
 
         lhs_tree.extend(rhs_tree.iter());
         *sorted = false;
@@ -533,7 +538,7 @@ where
 
 /// A builder for [`Layer`]s
 pub struct LayerBuilder {
-    min_depth: Option<u32>,
+    min_depth: u32,
     index_capacity: Option<usize>,
     collision_capacity: Option<usize>
 }
@@ -541,14 +546,14 @@ pub struct LayerBuilder {
 impl LayerBuilder {
     pub fn new() -> Self {
         Self {
-            min_depth: None,
+            min_depth: 0,
             index_capacity: None,
             collision_capacity: None
         }
     }
 
     pub fn with_min_depth(&mut self, depth: u32) -> &mut Self {
-        self.min_depth = Some(depth);
+        self.min_depth = 0;
         self
     }
 
