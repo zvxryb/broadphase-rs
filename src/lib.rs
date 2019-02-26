@@ -380,6 +380,9 @@ where
     }
 
     /// Append multiple objects to the `Layer`
+    /// 
+    /// Complex geometry may provide multiple bounds for a single object ID; this usage would be common
+    /// for static geometry, as it prevents extraneous self-collisions
     pub fn extend<Iter, Point_, Scalar_>(&mut self, system_bounds: Bounds<Point_>, objects: Iter)
     where
         Iter: std::iter::Iterator<Item = (Bounds<Point_>, ID)>,
@@ -473,12 +476,11 @@ where
                 }
                 stack.pop();
             }
+            if stack.iter().any(|&(_, id_)| id == id_) {
+                continue;
+            }
             for &(_, id_) in &stack {
-                if id == id_ {
-                    if log_enabled!(log::Level::Debug) {
-                        debug!("duplicate index for entity {:?}", id);
-                    }
-                } else if filter(id, id_) {
+                if id != id_ && filter(id, id_) {
                     self.collisions.insert((id, id_));
                 }
             }
