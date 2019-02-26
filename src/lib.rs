@@ -29,7 +29,7 @@
 //! 
 //! // ...
 //! 
-//! let mut layer: Layer<Index64_3D, ID> = Layer::new();
+//! let mut layer: Layer<Index64_3D, ID> = LayerBuilder::new().build();
 //! 
 //! // ...
 //! 
@@ -92,7 +92,7 @@ use std::collections::hash_map::DefaultHasher as Hasher;
 mod index;
 pub use index::{SpatialIndex, Index64_3D};
 
-type BuildHasher = std::hash::BuildHasherDefault<Hasher>;
+type BuildHasherImpl = std::hash::BuildHasherDefault<Hasher>;
 
 trait MaxAxis<T> {
     fn max_axis(self) -> T;
@@ -142,15 +142,25 @@ where
     }
 }
 
-fn truncate<T>(x: T, bits: u32) -> T
+fn scale_at_depth<T>(depth: u32) -> T
 where
     T: PrimInt + Unsigned + Shl<u32, Output = T> + Sized
 {
     let total_bits = 8 * (std::mem::size_of::<T>() as u32);
-    if bits == 0 {
+    if depth == 0 {
+        panic!("scale at zero depth would overflow integer");
+    }
+    T::one() << (total_bits - depth)
+}
+
+fn truncate_to_depth<T>(x: T, depth: u32) -> T
+where
+    T: PrimInt + Unsigned + Shl<u32, Output = T> + Sized
+{
+    if depth == 0 {
         x
     } else {
-        x & !((T::one() << (total_bits - bits)) - T::one())
+        x & !(scale_at_depth::<T>(depth) - T::one())
     }
 }
 
@@ -179,7 +189,8 @@ pub trait Quantize : QuantizeResult {
 
 /// The set of indices for an object with known bounds
 /// 
-/// Index `depth` is chosen such that this returns no more than 4 (2D) or 8 (3D) indices
+/// By default, index `depth` is chosen such that this returns no more than 4 (2D) or 8 (3D) indices.
+/// `min_depth` provides a lower-bound which enables quick partitioning (for parallel task generation)
 
 pub trait LevelIndexBounds<Index>
 where
@@ -187,7 +198,7 @@ where
 {
     type Output;
 
-    fn indices(self) -> Self::Output;
+    fn indices(self, min_depth: Option<u32>) -> Self::Output;
     fn indices_at_depth(self, depth: u32) -> Self::Output;
 }
 
@@ -306,33 +317,68 @@ where
 {
     type Output = SmallVec<[Index; 8]>;
 
-    fn indices(self) -> Self::Output {
+    fn indices(self, min_depth: Option<u32>) -> Self::Output {
         let max_axis = self.size().max_axis();
-        let depth = Index::clamp_depth((max_axis - Scalar::one()).leading_zeros());
+        let mut depth = (max_axis - Scalar::one()).leading_zeros();
+        if let Some(min_depth_) = min_depth {
+            if depth < min_depth_ {
+                depth = min_depth_;
+            }
+        }
+        depth = Index::clamp_depth(depth);
+        
         self.indices_at_depth(depth)
     }
 
     fn indices_at_depth(self, depth: u32) -> Self::Output {
-        let min = self.min.map(|scalar| truncate(scalar, depth));
-        let max = self.max.map(|scalar| truncate(scalar, depth));
+        if depth == 0 {
+            return smallvec![Index::default()
+                .set_depth(0)
+                .set_origin(Point3::new(
+                    Scalar::zero(),
+                    Scalar::zero(),
+                    Scalar::zero()))];
+        }
 
-        let mask =
-             ((min.x != max.x) as u32)       |
-            (((min.y != max.y) as u32) << 1) |
-            (((min.z != max.z) as u32) << 2);
+        let min = self.min.map(|scalar| truncate_to_depth(scalar, depth));
+        let max = self.max.map(|scalar| truncate_to_depth(scalar, depth));
 
-        let mut level_bounds: SmallVec<[Point3<Scalar>; 8]> = SmallVec::new();
-        if (mask & 0b000) == 0 { level_bounds.push(Point3::new(min.x, min.y, min.z)); }
-        if (mask & 0b001) == 1 { level_bounds.push(Point3::new(max.x, min.y, min.z)); }
-        if (mask & 0b010) == 1 { level_bounds.push(Point3::new(min.x, max.y, min.z)); }
-        if (mask & 0b011) == 2 { level_bounds.push(Point3::new(max.x, max.y, min.z)); }
-        if (mask & 0b100) == 1 { level_bounds.push(Point3::new(min.x, min.y, max.z)); }
-        if (mask & 0b101) == 2 { level_bounds.push(Point3::new(max.x, min.y, max.z)); }
-        if (mask & 0b110) == 2 { level_bounds.push(Point3::new(min.x, max.y, max.z)); }
-        if (mask & 0b111) == 3 { level_bounds.push(Point3::new(max.x, max.y, max.z)); }
-        level_bounds.into_iter()
-            .map(|origin| Index::default().set_depth(depth).set_origin(origin))
-            .collect()
+        let mut indices: Self::Output = Self::Output::new();
+
+        let step = scale_at_depth::<Scalar>(depth);
+        let mut z = min.z;
+        loop {
+            let mut y = min.y;
+            loop {
+                let mut x = min.x;
+                loop {
+                    indices.push(Index::default()
+                        .set_depth(depth)
+                        .set_origin(Point3::new(x, y, z)));
+
+                    if x >= max.x {
+                        break;
+                    }
+                    x += step;
+                }
+
+                if y >= max.y {
+                    break;
+                }
+                y += step;
+            }
+
+            if z >= max.z {
+                break;
+            }
+            z += step;
+        }
+
+        if indices.len() > 8 {
+            warn!("indices_at_depth generated more than 8 indices; decrease min_depth or split large objects to avoid heap allocations");
+        }
+
+        indices
     }
 }
 
@@ -350,8 +396,9 @@ where
     Index: SpatialIndex,
     ID: Ord + std::hash::Hash
 {
+    min_depth: Option<u32>,
     pub tree: (Vec<(Index, ID)>, bool),
-    collisions: HashSet<(ID, ID), BuildHasher>,
+    collisions: HashSet<(ID, ID), BuildHasherImpl>,
     invalid: Vec<ID>
 }
 
@@ -364,15 +411,6 @@ where
     <Index::Point as EuclideanSpace>::Scalar: Debug + NumAssignOps + PrimInt,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
-    /// Instantiate an empty `Layer`
-    pub fn new() -> Self {
-        Self {
-            tree: (Vec::new(), true),
-            collisions: HashSet::default(),
-            invalid: Vec::new()
-        }
-    }
-
     /// Clear all internal state
     pub fn clear(&mut self) {
         let (tree, sorted) = &mut self.tree;
@@ -406,13 +444,12 @@ where
                 self.invalid.push(id);
                 continue
             }
-            
 
             tree.extend(bounds
                 .normalize_to_system(system_bounds)
                 .quantize()
                 .expect("failed to filter bounds outside system")
-                .indices()
+                .indices(self.min_depth)
                 .into_iter()
                 .map(|index| (index, id)));
 
@@ -453,7 +490,7 @@ where
 
     /// Detects collisions between all objects in the `Layer`
     pub fn detect_collisions<'a>(&'a mut self)
-        -> &'a HashSet<(ID, ID), BuildHasher>
+        -> &'a HashSet<(ID, ID), BuildHasherImpl>
     {
         self.detect_collisions_filtered(|_, _| true)
     }
@@ -464,7 +501,7 @@ where
     /// post-duplicate-removal (i.e. by `detect_collisions().iter().filter()`) depending on the complexity
     /// of the filter.
     pub fn detect_collisions_filtered<'a, F>(&'a mut self, mut filter: F)
-        -> &'a HashSet<(ID, ID), BuildHasher>
+        -> &'a HashSet<(ID, ID), BuildHasherImpl>
     where
         F: FnMut(ID, ID) -> bool
     {
@@ -491,6 +528,62 @@ where
         }
 
         &self.collisions
+    }
+}
+
+/// A builder for [`Layer`]s
+pub struct LayerBuilder {
+    min_depth: Option<u32>,
+    index_capacity: Option<usize>,
+    collision_capacity: Option<usize>
+}
+
+impl LayerBuilder {
+    pub fn new() -> Self {
+        Self {
+            min_depth: None,
+            index_capacity: None,
+            collision_capacity: None
+        }
+    }
+
+    pub fn with_min_depth(&mut self, depth: u32) -> &mut Self {
+        self.min_depth = Some(depth);
+        self
+    }
+
+    pub fn with_index_capacity(&mut self, capacity: usize) -> &mut Self {
+        self.index_capacity = Some(capacity);
+        self
+    }
+
+    pub fn with_collision_capacity(&mut self, capacity: usize) -> &mut Self {
+        self.collision_capacity = Some(capacity);
+        self
+    }
+
+    pub fn build<Index, ID>(&self) -> Layer<Index, ID>
+    where
+        Index: SpatialIndex,
+        ID: Copy + Eq + Ord + Send + std::hash::Hash + Debug,
+        Index::Point: Copy + EuclideanSpace,
+        <Index::Point as EuclideanSpace>::Diff: cgmath::VectorSpace,
+        <Index::Point as EuclideanSpace>::Scalar: Debug + NumAssignOps + PrimInt,
+        Bounds<Index::Point>: LevelIndexBounds<Index>
+    {
+        let hasher = BuildHasherImpl::default();
+        Layer::<Index, ID>{
+            min_depth: self.min_depth,
+            tree: (match self.index_capacity {
+                    Some(capacity) => Vec::with_capacity(capacity),
+                    None => Vec::new()
+                }, true),
+            collisions: match self.collision_capacity {
+                    Some(capacity) => HashSet::with_capacity_and_hasher(capacity, hasher),
+                    None => HashSet::with_hasher(hasher)
+                },
+            invalid: Vec::new()
+        }
     }
 }
 

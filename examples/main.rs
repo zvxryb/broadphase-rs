@@ -210,7 +210,9 @@ struct Collisions {
 impl Collisions {
     fn new() -> Self {
         Self {
-            system: broadphase::Layer::new(),
+            system: broadphase::LayerBuilder::new()
+                .with_min_depth(6)
+                .build(),
             collisions: Vec::new(),
         }
     }
