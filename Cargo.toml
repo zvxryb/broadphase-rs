@@ -21,6 +21,7 @@ rayon = {version="^1.0.3", optional=true}
 smallvec = "^0.6.8"
 
 [dev-dependencies]
+env_logger = "^0.6.0"
 ggez = {path="./third_party/ggez"}
 rand = "^0.6.4"
 rand_chacha = "^0.1.1"

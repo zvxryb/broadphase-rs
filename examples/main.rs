@@ -2,6 +2,7 @@
 
 extern crate broadphase;
 extern crate cgmath;
+extern crate env_logger;
 extern crate ggez;
 extern crate rand;
 extern crate specs;
@@ -426,6 +427,8 @@ impl ggez::event::EventHandler for GameState {
 }
 
 fn main() {
+    env_logger::init();
+
     use ggez::conf::*;
     let (mut context, mut event_loop) = ggez::ContextBuilder::new("broadphase_demo", "zvxryb")
         .window_setup(
