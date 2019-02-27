@@ -509,15 +509,24 @@ where
     /// Collisions are filtered prior to duplicate removal.  This may be faster or slower than filtering
     /// post-duplicate-removal (i.e. by `detect_collisions().iter().filter()`) depending on the complexity
     /// of the filter.
-    pub fn detect_collisions_filtered<'a, F>(&'a mut self, mut filter: F)
+    pub fn detect_collisions_filtered<'a, F>(&'a mut self, filter: F)
         -> &'a HashSet<(ID, ID), BuildHasherImpl>
     where
         F: FnMut(ID, ID) -> bool
     {
         self.sort();
 
-        let mut stack: SmallVec<[(Index, ID); 32]> = SmallVec::new();
         let (tree, _) = &self.tree;
+        Self::detect_collisions_impl(tree.as_slice(), &mut self.collisions, filter);
+
+        &self.collisions
+    }
+
+    fn detect_collisions_impl<F>(tree: &[(Index, ID)], collisions: &mut HashSet<(ID, ID), BuildHasherImpl>, mut filter: F)
+    where
+        F: FnMut(ID, ID) -> bool
+    {
+        let mut stack: SmallVec<[(Index, ID); 32]> = SmallVec::new();
         for &(index, id) in tree {
             while let Some(&(index_, _)) = stack.last() {
                 if index.overlaps(index_) {
@@ -530,13 +539,11 @@ where
             }
             for &(_, id_) in &stack {
                 if id != id_ && filter(id, id_) {
-                    self.collisions.insert((id, id_));
+                    collisions.insert((id, id_));
                 }
             }
             stack.push((index, id))
         }
-
-        &self.collisions
     }
 }
 
