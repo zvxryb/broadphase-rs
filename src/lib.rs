@@ -73,12 +73,14 @@ use cgmath::{Point2, Point3, Vector2, Vector3};
 use num_traits::{NumAssignOps, NumCast, PrimInt, Unsigned};
 use smallvec::SmallVec;
 
-use std::cell::{RefMut, RefCell};
 use std::fmt::Debug;
 use std::ops::{DerefMut, Shl};
 
 #[cfg(feature="parallel")]
 use rayon::prelude::*;
+
+#[cfg(feature="parallel")]
+use std::cell::{RefMut, RefCell};
 
 #[cfg(feature="parallel")]
 use thread_local::CachedThreadLocal;
@@ -655,8 +657,9 @@ impl LayerBuilder {
                     Some(capacity) => Vec::with_capacity(capacity),
                     None => Vec::new()
                 },
-            collisions_tls: CachedThreadLocal::new(),
-            invalid: Vec::new()
+            invalid: Vec::new(),
+            #[cfg(feature="parallel")]
+            collisions_tls: CachedThreadLocal::new()
         }
     }
 }
