@@ -509,7 +509,7 @@ where
         let (tree, _) = &self.tree;
         Self::scan_impl(tree.as_slice(), &mut self.collisions, filter);
 
-        self.collisions.sort();
+        self.collisions.sort_unstable();
         self.collisions.dedup();
 
         &self.collisions
@@ -552,7 +552,7 @@ where
             self.collisions.extend(set__.iter());
         }
 
-        self.collisions.par_sort();
+        self.collisions.par_sort_unstable();
         self.collisions.dedup();
 
         &self.collisions
