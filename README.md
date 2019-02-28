@@ -14,11 +14,15 @@ This method is capable of supporting objects of varying scale (unlike uniform gr
 non-hierarchical structure in memory (unlike quad- or oct-trees), as the entire representation exists in a single
 vector of index/object pairs.
 
+broadphase-rs is capable of supporting many thousands of objects at interactive speeds.  While it has not (yet) been
+benchmarked against alternatives, the example's collision detection routine takes roughly ~6ms for 10,000 dynamic
+objects (stable-x86_64-pc-windows-msvc, rustc 1.32.0, Intel Core i5 6600K, release mode, using `par_scan()`)
+
 ## Usage
 
 From the included example:
 
-```Rust
+```rust
 struct Collisions {
     system: broadphase::Layer<broadphase::Index64_3D, specs::world::Index>,
     collisions: Vec<(specs::Entity, specs::Entity, f32, Vector2<f32>)>,
@@ -35,7 +39,7 @@ self.system.extend(collision_config.bounds,
                 max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
             (bounds, ent.id())}));
 
-self.collisions = self.system.detect_collisions()
+self.collisions = self.system.par_scan()
     .iter()
     .filter_map(|&(id0, id1)| {
         // ...narrow-phase...
