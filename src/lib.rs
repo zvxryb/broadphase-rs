@@ -42,21 +42,18 @@
 //! layer.extend(system_bounds, objects);
 //! 
 //! // scans the layer for collisions:
-//! let potential_collisions = layer.detect_collisions();
+//! let potential_collisions = layer.scan();
 //! # }
 //! ```
 
 extern crate cgmath;
 extern crate num_traits;
 
-#[cfg(feature="fnv")]
-extern crate fnv;
-
-#[cfg(feature="rustc-hash")]
-extern crate rustc_hash;
-
-#[cfg(feature="rayon")]
+#[cfg(feature="parallel")]
 extern crate rayon;
+
+#[cfg(feature="parallel")]
+extern crate thread_local;
 
 #[cfg(test)]
 extern crate rand;
@@ -76,26 +73,18 @@ use cgmath::{Point2, Point3, Vector2, Vector3};
 use num_traits::{NumAssignOps, NumCast, PrimInt, Unsigned};
 use smallvec::SmallVec;
 
-use std::collections::HashSet;
+use std::cell::{RefMut, RefCell};
 use std::fmt::Debug;
-use std::ops::Shl;
+use std::ops::{DerefMut, Shl};
 
-#[cfg(feature="rayon")]
+#[cfg(feature="parallel")]
 use rayon::prelude::*;
 
-#[cfg(feature="fnv")]
-use fnv::FnvHasher as Hasher;
-
-#[cfg(feature="rustc-hash")]
-use rustc_hash::FxHasher as Hasher;
-
-#[cfg(not(any(feature="fnv", feature="rustc-hash")))]
-use std::collections::hash_map::DefaultHasher as Hasher;
+#[cfg(feature="parallel")]
+use thread_local::CachedThreadLocal;
 
 mod index;
 pub use index::{SpatialIndex, Index64_3D};
-
-type BuildHasherImpl = std::hash::BuildHasherDefault<Hasher>;
 
 trait MaxAxis<T> {
     fn max_axis(self) -> T;
@@ -197,6 +186,7 @@ pub trait Quantize : QuantizeResult {
 
 pub trait LevelIndexBounds<Index>
 where
+    Index: SpatialIndex,
     Self::Output: IntoIterator<Item = Index>
 {
     type Output;
@@ -219,7 +209,7 @@ where
     Point: EuclideanSpace + Copy
 {
     pub fn new(min: Point, max: Point) -> Self {
-        Self{min: min, max: max}
+        Self{min, max}
     }
 
     pub fn size(self) -> Point::Diff {
@@ -315,14 +305,14 @@ where
 
 impl<Scalar, Index> LevelIndexBounds<Index> for Bounds<Point3<Scalar>>
 where
-    Scalar: NumAssignOps + PrimInt + Unsigned + Shl<u32, Output = Scalar> + Debug,
-    Index: SpatialIndex<Point = Point3<Scalar>>
+    Scalar: Debug + NumAssignOps + PrimInt + Unsigned + Shl<u32, Output = Scalar>,
+    Index: SpatialIndex<Scalar = Scalar, Diff = Vector3<Scalar>, Point = Point3<Scalar>>
 {
     type Output = SmallVec<[Index; 8]>;
 
     fn indices(self, min_depth: Option<u32>) -> Self::Output {
         let max_axis = self.size().max_axis();
-        let mut depth = (max_axis - Scalar::one()).leading_zeros();
+        let mut depth = (max_axis - Index::Scalar::one()).leading_zeros();
         if let Some(min_depth_) = min_depth {
             if depth < min_depth_ {
                 depth = min_depth_;
@@ -337,7 +327,7 @@ where
         if depth == 0 {
             return smallvec![Index::default()
                 .set_depth(0)
-                .set_origin(Point3::new(
+                .set_origin(Index::Point::new(
                     Scalar::zero(),
                     Scalar::zero(),
                     Scalar::zero()))];
@@ -394,25 +384,24 @@ where
 /// 
 /// `ID` is the type representing object IDs
 
-#[derive(Clone, Default)]
 pub struct Layer<Index, ID>
 where
     Index: SpatialIndex,
-    ID: Ord + std::hash::Hash
+    ID: Copy + Clone + Eq + Ord + Send + Debug
 {
     min_depth: u32,
     pub tree: (Vec<(Index, ID)>, bool),
-    collisions: HashSet<(ID, ID), BuildHasherImpl>,
-    invalid: Vec<ID>
+    collisions: Vec<(ID, ID)>,
+    invalid: Vec<ID>,
+
+    #[cfg(feature="parallel")]
+    collisions_tls: CachedThreadLocal<RefCell<Vec<(ID, ID)>>>,
 }
 
 impl<Index, ID> Layer<Index, ID>
 where
     Index: SpatialIndex,
-    ID: Copy + Eq + Ord + Send + std::hash::Hash + Debug,
-    Index::Point: Copy + EuclideanSpace,
-    <Index::Point as EuclideanSpace>::Diff: cgmath::VectorSpace,
-    <Index::Point as EuclideanSpace>::Scalar: Debug + NumAssignOps + PrimInt,
+    ID: Copy + Clone + Eq + Ord + Send + Debug,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
     /// Clear all internal state
@@ -479,51 +468,126 @@ where
         return;
     }
 
-    #[cfg(feature="rayon")]
-    fn sort_impl<T: Ord + Send, Slice: AsMut<[T]>>(items: &mut Slice) {
-        items.as_mut().par_sort_unstable();
-    }
-
-    #[cfg(not(feature="rayon"))]
-    fn sort_impl<T: Ord, Slice: AsMut<[T]>>(items: &mut Slice) {
-        items.as_mut().sort_unstable();
+    #[cfg(feature="parallel")]
+    fn par_sort(&mut self) {
+        let (tree, sorted) = &mut self.tree;
+        if !*sorted {
+            tree.par_sort_unstable();
+            *sorted = true;
+        }
     }
 
     fn sort(&mut self) {
         let (tree, sorted) = &mut self.tree;
         if !*sorted {
-            Self::sort_impl(tree);
+            tree.sort_unstable();
             *sorted = true;
         }
     }
 
     /// Detects collisions between all objects in the `Layer`
-    pub fn detect_collisions<'a>(&'a mut self)
-        -> &'a HashSet<(ID, ID), BuildHasherImpl>
+    pub fn scan<'a>(&'a mut self)
+        -> &'a Vec<(ID, ID)>
     {
-        self.detect_collisions_filtered(|_, _| true)
+        self.scan_filtered(|_, _| true)
     }
 
     /// Detects collisions between all objects in the `Layer`, returning only those which pass a user-specified test
     /// 
     /// Collisions are filtered prior to duplicate removal.  This may be faster or slower than filtering
-    /// post-duplicate-removal (i.e. by `detect_collisions().iter().filter()`) depending on the complexity
+    /// post-duplicate-removal (i.e. by `scan().iter().filter()`) depending on the complexity
     /// of the filter.
-    pub fn detect_collisions_filtered<'a, F>(&'a mut self, filter: F)
-        -> &'a HashSet<(ID, ID), BuildHasherImpl>
+    pub fn scan_filtered<'a, F>(&'a mut self, filter: F)
+        -> &'a Vec<(ID, ID)>
     where
         F: FnMut(ID, ID) -> bool
     {
         self.sort();
 
         let (tree, _) = &self.tree;
-        Self::detect_collisions_impl(tree.as_slice(), &mut self.collisions, filter);
+        Self::scan_impl(tree.as_slice(), &mut self.collisions, filter);
+
+        self.collisions.sort();
+        self.collisions.dedup();
 
         &self.collisions
     }
 
-    fn detect_collisions_impl<F>(tree: &[(Index, ID)], collisions: &mut HashSet<(ID, ID), BuildHasherImpl>, mut filter: F)
+    /// [`scan`]: struct.Layer.html#method.scan
+    /// Parallel version of [`scan`]
+    #[cfg(feature="parallel")]
+    pub fn par_scan<'a>(&'a mut self)
+        -> &'a Vec<(ID, ID)>
     where
+        Index: Send + Sync,
+        ID: Send + Sync
+    {
+        self.par_scan_filtered(|_, _| true)
+    }
+
+    /// [`scan_filtered`]: struct.Layer.html#method.scan_filtered
+    /// Parallel version of [`scan_filtered`]
+    #[cfg(feature="parallel")]
+    pub fn par_scan_filtered<'a, F>(&'a mut self, filter: F)
+        -> &'a Vec<(ID, ID)>
+    where
+        Index: Send + Sync,
+        ID: Send + Sync,
+        F: Copy + Send + Sync + FnMut(ID, ID) -> bool
+    {
+        self.par_sort();
+
+        for set in self.collisions_tls.iter_mut() {
+            set.borrow_mut().clear();
+        }
+
+        self.par_scan_impl(self.tree.0.as_slice(), filter);
+
+        for set in self.collisions_tls.iter_mut() {
+            use std::borrow::Borrow;
+            let set_: RefMut<Vec<(ID, ID)>> = set.borrow_mut();
+            let set__: &Vec<(ID, ID)> = set_.borrow();
+            self.collisions.extend(set__.iter());
+        }
+
+        self.collisions.par_sort();
+        self.collisions.dedup();
+
+        &self.collisions
+    }
+
+    #[cfg(feature="parallel")]
+    fn par_scan_impl<F>(&self, tree: &[(Index, ID)], filter: F)
+    where
+        Index: Send + Sync,
+        ID: Send + Sync,
+        F: Copy + Send + Sync + FnMut(ID, ID) -> bool
+    {
+        const SPLIT_THRESHOLD: usize = 256;
+        if tree.len() <= SPLIT_THRESHOLD {
+            let collisions = self.collisions_tls.get_or(|| Box::new(RefCell::new(Vec::new())));
+            Self::scan_impl(tree, collisions.borrow_mut(), filter);
+        } else {
+            let n = tree.len();
+            let mut i = n / 2;
+            while i < n {
+                let (last, _) = tree[i-1];
+                let (next, _) = tree[i];
+                if !Index::same_cell_at_depth(last, next, self.min_depth) {
+                    break;
+                }
+                i += 1;
+            }
+            let (head, tail) = tree.split_at(i);
+            rayon::join(
+                || self.par_scan_impl(head, filter),
+                || self.par_scan_impl(tail, filter));
+        }
+    }
+
+    fn scan_impl<C, F>(tree: &[(Index, ID)], mut collisions: C, mut filter: F)
+    where
+        C: DerefMut<Target = Vec<(ID, ID)>>,
         F: FnMut(ID, ID) -> bool
     {
         let mut stack: SmallVec<[(Index, ID); 32]> = SmallVec::new();
@@ -539,7 +603,7 @@ where
             }
             for &(_, id_) in &stack {
                 if id != id_ && filter(id, id_) {
-                    collisions.insert((id, id_));
+                    collisions.push((id, id_));
                 }
             }
             stack.push((index, id))
@@ -548,6 +612,7 @@ where
 }
 
 /// A builder for `Layer`s
+#[derive(Default)]
 pub struct LayerBuilder {
     min_depth: u32,
     index_capacity: Option<usize>,
@@ -556,11 +621,7 @@ pub struct LayerBuilder {
 
 impl LayerBuilder {
     pub fn new() -> Self {
-        Self {
-            min_depth: 0,
-            index_capacity: None,
-            collision_capacity: None
-        }
+        Self::default()
     }
 
     pub fn with_min_depth(&mut self, depth: u32) -> &mut Self {
@@ -581,13 +642,9 @@ impl LayerBuilder {
     pub fn build<Index, ID>(&self) -> Layer<Index, ID>
     where
         Index: SpatialIndex,
-        ID: Copy + Eq + Ord + Send + std::hash::Hash + Debug,
-        Index::Point: Copy + EuclideanSpace,
-        <Index::Point as EuclideanSpace>::Diff: cgmath::VectorSpace,
-        <Index::Point as EuclideanSpace>::Scalar: Debug + NumAssignOps + PrimInt,
+        ID: Copy + Eq + Ord + Send + Debug,
         Bounds<Index::Point>: LevelIndexBounds<Index>
     {
-        let hasher = BuildHasherImpl::default();
         Layer::<Index, ID>{
             min_depth: self.min_depth,
             tree: (match self.index_capacity {
@@ -595,9 +652,10 @@ impl LayerBuilder {
                     None => Vec::new()
                 }, true),
             collisions: match self.collision_capacity {
-                    Some(capacity) => HashSet::with_capacity_and_hasher(capacity, hasher),
-                    None => HashSet::with_hasher(hasher)
+                    Some(capacity) => Vec::with_capacity(capacity),
+                    None => Vec::new()
                 },
+            collisions_tls: CachedThreadLocal::new(),
             invalid: Vec::new()
         }
     }

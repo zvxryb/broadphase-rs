@@ -144,7 +144,7 @@ impl<'a> specs::System<'a> for Lifecycle {
             }
         }
 
-        const BALL_COUNT_MAX: u32 = 1500;
+        const BALL_COUNT_MAX: u32 = 5000;
         const LIFETIME_MIN_MS: u32 = 5000;
         const LIFETIME_MAX_MS: u32 = 30000;
         for _ in 0..BALL_COUNT_MAX*time.delta.subsec_millis()/LIFETIME_MIN_MS {
@@ -154,7 +154,7 @@ impl<'a> specs::System<'a> for Lifecycle {
             let lifetime = Duration::from_millis(rand::thread_rng().gen_range(
                 LIFETIME_MIN_MS as u64, LIFETIME_MAX_MS as u64));
 
-            let r = rand::thread_rng().gen_range(1.3f32, 2.8f32).exp();
+            let r = rand::thread_rng().gen_range(0.5f32, 2.0f32).exp();
 
             let x0 = screen_coords.0.x + r;
             let x1 = screen_coords.0.w - 2f32 * r + x0;
@@ -244,7 +244,7 @@ impl<'a> specs::System<'a> for Collisions {
                             max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
                         (bounds, ent.id())}));
 
-            self.collisions = self.system.detect_collisions()
+            self.collisions = self.system.par_scan()
                 .iter()
                 .filter_map(|&(id0, id1)| {
                     let ent0 = entities.entity(id0);

@@ -1,6 +1,10 @@
 // mlodato, 20190221
 
-use cgmath::Point3;
+use cgmath::{Point3, Vector3};
+use cgmath::prelude::*;
+use num_traits::{NumAssignOps, PrimInt, Unsigned};
+use std::fmt::Debug;
+use std::ops::Shl;
 
 /// An index representing an object's position and scale
 /// 
@@ -17,7 +21,9 @@ use cgmath::Point3;
 /// implementation &mdash; an appropriately-truncated value must be passed as an argument to `set_origin`
 
 pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
-    type Point;
+    type Scalar: Debug + NumAssignOps + PrimInt + Unsigned + Shl<u32, Output = Self::Scalar>;
+    type Diff: cgmath::VectorSpace<Scalar = Self::Scalar>;
+    type Point: Copy + EuclideanSpace<Diff = Self::Diff, Scalar = Self::Scalar>;
 
     fn clamp_depth(u32) -> u32;
     fn origin(self) -> Self::Point;
@@ -25,6 +31,7 @@ pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
     fn set_origin(self, Self::Point) -> Self;
     fn set_depth(self, u32) -> Self;
     fn overlaps(self, other: Self) -> bool;
+    fn same_cell_at_depth(lhs: Self, rhs: Self, depth: u32) -> bool;
 }
 
 /// A 64-bit 3D index which provides 19 bits' precision per axis
@@ -60,7 +67,7 @@ impl Index64_3D {
 
     #[inline]
     fn encode_axis(origin: u32) -> u64 {
-        let axis0_ = u64::from(origin >> (32 - Self::AXIS_BITS));
+        let axis0_ = <u64 as From<u32>>::from(origin >> (32 - Self::AXIS_BITS));
         let axis00 =  axis0_          & 0o0_000_000_000_000_000_000_777;
         let axis01 = (axis0_ << 0o22) & 0o0_000_000_000_777_000_000_000;
         let axis02 = (axis0_ << 0o44) & 0o0_777_000_000_000_000_000_000;
@@ -81,6 +88,8 @@ impl Index64_3D {
 }
 
 impl SpatialIndex for Index64_3D {
+    type Scalar = u32;
+    type Diff = Vector3<u32>;
     type Point = Point3<u32>;
 
     fn clamp_depth(depth: u32) -> u32 {
@@ -115,14 +124,17 @@ impl SpatialIndex for Index64_3D {
     fn set_depth(self, depth: u32) -> Self {
         let Self(mut index) = self;
         index &= !Self::DEPTH_MASK;
-        index |= Self::DEPTH_MASK & (u64::from(Self::clamp_depth(depth)) << Self::DEPTH_SHIFT);
+        index |= Self::DEPTH_MASK & (
+            <u64 as From<u32>>::from(Self::clamp_depth(depth)) << Self::DEPTH_SHIFT);
         Self(index)
     }
 
     fn overlaps(self, other: Self) -> bool {
-        let Self(lhs) = self;
-        let Self(rhs) = other;
-        (lhs ^ rhs) & Self::level_mask(std::cmp::min(self.depth(), other.depth())) == 0
+        Self::same_cell_at_depth(self, other, std::cmp::min(self.depth(), other.depth()))
+    }
+
+    fn same_cell_at_depth(Self(lhs): Self, Self(rhs): Self, depth: u32) -> bool {
+        (lhs ^ rhs) & Self::level_mask(depth) == 0
     }
 }
 
