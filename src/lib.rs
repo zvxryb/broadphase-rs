@@ -543,7 +543,7 @@ where
             set.borrow_mut().clear();
         }
 
-        self.par_scan_impl(self.tree.0.as_slice(), filter);
+        self.par_scan_impl(rayon::current_num_threads(), self.tree.0.as_slice(), filter);
 
         for set in self.collisions_tls.iter_mut() {
             use std::borrow::Borrow;
@@ -559,14 +559,14 @@ where
     }
 
     #[cfg(feature="parallel")]
-    fn par_scan_impl<F>(&self, tree: &[(Index, ID)], filter: F)
+    fn par_scan_impl<F>(&self, threads: usize, tree: &[(Index, ID)], filter: F)
     where
         Index: Send + Sync,
         ID: Send + Sync,
         F: Copy + Send + Sync + FnMut(ID, ID) -> bool
     {
-        const SPLIT_THRESHOLD: usize = 256;
-        if tree.len() <= SPLIT_THRESHOLD {
+        const SPLIT_THRESHOLD: usize = 64;
+        if threads <= 1 || tree.len() <= SPLIT_THRESHOLD {
             let collisions = self.collisions_tls.get_or(|| Box::new(RefCell::new(Vec::new())));
             Self::scan_impl(tree, collisions.borrow_mut(), filter);
         } else {
@@ -582,8 +582,8 @@ where
             }
             let (head, tail) = tree.split_at(i);
             rayon::join(
-                || self.par_scan_impl(head, filter),
-                || self.par_scan_impl(tail, filter));
+                || self.par_scan_impl(threads >> 1, head, filter),
+                || self.par_scan_impl(threads >> 1, tail, filter));
         }
     }
 
