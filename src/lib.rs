@@ -377,6 +377,18 @@ where
     }
 }
 
+#[cfg(not(feature="parallel"))]
+pub trait ObjectID: Copy + Clone + Eq + Ord + Debug {}
+
+#[cfg(not(feature="parallel"))]
+impl<T: Copy + Clone + Eq + Ord + Debug> ObjectID for T {}
+
+#[cfg(feature="parallel")]
+pub trait ObjectID: Copy + Clone + Eq + Ord + Send + Sync + Debug {}
+
+#[cfg(feature="parallel")]
+impl<T: Copy + Clone + Eq + Ord + Send + Sync + Debug> ObjectID for T {}
+
 /// [`SpatialIndex`]: trait.SpatialIndex.html
 /// [`Index64_3D`]: trait.Index64_3D.html
 
@@ -389,7 +401,7 @@ where
 pub struct Layer<Index, ID>
 where
     Index: SpatialIndex,
-    ID: Copy + Clone + Eq + Ord + Send + Debug
+    ID: ObjectID
 {
     min_depth: u32,
     pub tree: (Vec<(Index, ID)>, bool),
@@ -403,7 +415,7 @@ where
 impl<Index, ID> Layer<Index, ID>
 where
     Index: SpatialIndex,
-    ID: Copy + Clone + Eq + Ord + Send + Debug,
+    ID: ObjectID,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
     /// Clear all internal state
@@ -521,8 +533,7 @@ where
     pub fn par_scan<'a>(&'a mut self)
         -> &'a Vec<(ID, ID)>
     where
-        Index: Send + Sync,
-        ID: Send + Sync
+        Index: Send + Sync
     {
         self.par_scan_filtered(|_, _| true)
     }
@@ -534,7 +545,6 @@ where
         -> &'a Vec<(ID, ID)>
     where
         Index: Send + Sync,
-        ID: Send + Sync,
         F: Copy + Send + Sync + FnMut(ID, ID) -> bool
     {
         self.par_sort();
@@ -562,7 +572,6 @@ where
     fn par_scan_impl<F>(&self, threads: usize, tree: &[(Index, ID)], filter: F)
     where
         Index: Send + Sync,
-        ID: Send + Sync,
         F: Copy + Send + Sync + FnMut(ID, ID) -> bool
     {
         const SPLIT_THRESHOLD: usize = 64;
@@ -644,7 +653,7 @@ impl LayerBuilder {
     pub fn build<Index, ID>(&self) -> Layer<Index, ID>
     where
         Index: SpatialIndex,
-        ID: Copy + Eq + Ord + Send + Debug,
+        ID: ObjectID,
         Bounds<Index::Point>: LevelIndexBounds<Index>
     {
         Layer::<Index, ID>{
