@@ -482,8 +482,13 @@ where
         return;
     }
 
+    /// [`par_scan_filtered`]: struct.Layer.html#method.par_scan_filtered
+    /// [`par_scan`]: struct.Layer.html#method.par_scan
+    /// Sort indices to ready data for detection (parallel)
+    /// 
+    /// This will be called implicitly when necessary (i.e. by [`par_scan_filtered`], [`par_scan`], etc.)
     #[cfg(feature="parallel")]
-    fn par_sort(&mut self) {
+    pub fn par_sort(&mut self) {
         let (tree, sorted) = &mut self.tree;
         if !*sorted {
             tree.par_sort_unstable();
@@ -491,7 +496,12 @@ where
         }
     }
 
-    fn sort(&mut self) {
+    /// [`scan_filtered`]: struct.Layer.html#method.scan_filtered
+    /// [`scan`]: struct.Layer.html#method.scan
+    /// Sort indices to ready data for detection
+    /// 
+    /// This will be called implicitly when necessary (i.e. by [`scan_filtered`], [`scan`], etc.)
+    pub fn sort(&mut self) {
         let (tree, sorted) = &mut self.tree;
         if !*sorted {
             tree.sort_unstable();
