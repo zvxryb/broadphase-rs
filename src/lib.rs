@@ -401,10 +401,11 @@ impl<T: Copy + Clone + Eq + Ord + Send + Sync + Debug> ObjectID for T {}
 pub struct Layer<Index, ID>
 where
     Index: SpatialIndex,
-    ID: ObjectID
+    ID: ObjectID,
+    Bounds<Index::Point>: LevelIndexBounds<Index>
 {
     min_depth: u32,
-    pub tree: (Vec<(Index, ID)>, bool),
+    tree: (Vec<(Index, ID)>, bool),
     collisions: Vec<(ID, ID)>,
     invalid: Vec<ID>,
 
@@ -418,6 +419,13 @@ where
     ID: ObjectID,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
+    /// Iterate over all indices in the `Layer`
+    /// 
+    /// This is primarily intended for visualization + debugging
+    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, (Index, ID)> {
+        self.tree.0.iter()
+    }
+
     /// Clear all internal state
     pub fn clear(&mut self) {
         let (tree, sorted) = &mut self.tree;

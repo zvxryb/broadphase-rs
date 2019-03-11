@@ -441,7 +441,7 @@ impl ggez::event::EventHandler for GameState {
             let scale  = collision_config.bounds.size();
             let offset = collision_config.bounds.min;
 
-            let iter = &mut self.collisions.system.tree.0.iter().peekable();
+            let iter = &mut self.collisions.system.iter().peekable();
             while let Some(_) = iter.peek() {
                 let mut mesh_builder = MeshBuilder::new();
                 for &(index, _) in iter.take(1000) {
