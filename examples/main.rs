@@ -13,7 +13,43 @@ use specs::prelude::*;
 
 use broadphase::Bounds;
 use cgmath::{Point2, Point3, Vector2};
+use std::alloc::{GlobalAlloc, Layout as AllocLayout, System as SystemAlloc};
+use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
+
+struct AllocLogger {
+    count  : AtomicUsize,
+    time_ns: AtomicUsize
+}
+
+impl AllocLogger {
+    fn clear_and_get_stats(&self) -> (usize, usize) {
+        (self.count  .swap(0, AtomicOrdering::Relaxed),
+         self.time_ns.swap(0, AtomicOrdering::Relaxed))
+    }
+}
+
+unsafe impl GlobalAlloc for AllocLogger {
+    #[inline(never)]
+    unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
+        self.count.fetch_add(1, AtomicOrdering::Relaxed);
+        let start = Instant::now();
+        let result = SystemAlloc.alloc(layout);
+        self.time_ns.fetch_add(start.elapsed().subsec_nanos() as usize, AtomicOrdering::Relaxed);
+        result
+    }
+
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: AllocLayout) {
+        let start = Instant::now();
+        SystemAlloc.dealloc(ptr, layout);
+        self.time_ns.fetch_add(start.elapsed().subsec_nanos() as usize, AtomicOrdering::Relaxed);
+    }
+}
+
+#[global_allocator]
+static ALLOCATOR: AllocLogger = AllocLogger{
+    count: ATOMIC_USIZE_INIT,
+    time_ns: ATOMIC_USIZE_INIT};
 
 struct Time {
     current: Duration,
@@ -235,6 +271,8 @@ impl<'a> specs::System<'a> for Collisions {
         let start = Instant::now();
 
         if collision_config.enabled {
+            ALLOCATOR.clear_and_get_stats();
+
             self.system.clear();
             self.system.extend(collision_config.bounds,
                 (&entities, &positions, &radii).join()
@@ -244,7 +282,8 @@ impl<'a> specs::System<'a> for Collisions {
                             max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
                         (bounds, ent.id())}));
 
-            self.collisions = self.system.par_scan()
+            self.collisions.clear();
+            self.collisions.extend(self.system.par_scan()
                 .iter()
                 .filter_map(|&(id0, id1)| {
                     let ent0 = entities.entity(id0);
@@ -264,8 +303,9 @@ impl<'a> specs::System<'a> for Collisions {
                         let n = offset / dist;
                         let u = r1.powi(3) / (r0.powi(3) + r1.powi(3));
                         Some((ent0, ent1, u, n * d))
-                    }})
-                .collect();
+                    }}));
+            let (alloc_count, alloc_time) = ALLOCATOR.clear_and_get_stats();
+            print!("allocs: ({:3}, {:8}ns)     ", alloc_count, alloc_time);
         } else {
             self.collisions.clear();
             for (ent0, pos0, &Radius(r0)) in (&entities, &positions, &radii).join() {
@@ -288,7 +328,7 @@ impl<'a> specs::System<'a> for Collisions {
                 }
             }
         }
-        print!("elapsed: {}    \r", start.elapsed().subsec_micros());
+        print!("elapsed: {:6}us\r", start.elapsed().subsec_micros());
 
         for &(ent0, ent1, u, v) in &self.collisions {
             positions.get_mut(ent0).unwrap().1 -= v * u;

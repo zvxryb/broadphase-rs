@@ -39,10 +39,10 @@ self.system.extend(collision_config.bounds,
                 max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
             (bounds, ent.id())}));
 
-self.collisions = self.system.par_scan()
+self.collisions.clear();
+self.collisions.extend(self.system.par_scan()
     .iter()
     .filter_map(|&(id0, id1)| {
         // ...narrow-phase...
-    })
-    .collect();
+    }));
 ```
