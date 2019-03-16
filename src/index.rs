@@ -24,7 +24,7 @@ use std::ops::Shl;
 /// corresponding a Y-bit (which should, likewise, be lower significance than the corresponding Z-bit for
 /// 3D indices)
 /// 
-/// `<SpatialIndex as Default>`::default() is required to return an index which encompasses the entire system
+/// `<SpatialIndex as Default>::default()` is required to return an index which encompasses the entire system
 /// bounds (i.e. zero origin and zero depth)
 
 pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {

@@ -228,7 +228,8 @@ where
 
     /// [`Layer::test`]: struct.Layer.html#method.test
     /// [`Layer::extend`]: struct.Layer.html#method.extend
-    /// A special case of [`Layer::test`] for ray-testing
+    /// [`RayTestGeometry`]: struct.RayTestGeometry.html
+    /// A special case of [`Layer::test`] for ray-testing, see [`RayTestGeometry`]
     /// 
     /// The `system_bounds` provided to this method should, in most cases, be identical to the
     /// `system_bounds` provided to [`Layer::extend`]
@@ -242,15 +243,16 @@ where
         max_depth: Option<u32>) -> &'a Vec<ID>
     where
         Point_: EuclideanSpace,
+        Point_::Diff: ElementWise + std::ops::Index<usize, Output = Point_::Scalar>,
         Point_::Scalar: cgmath::BaseFloat,
         RayTestGeometry<Point_>: TestGeometry
     {
-        let test_geometry: RayTestGeometry<Point_> = RayTestGeometry{
-            cell_bounds: system_bounds,
-            origin     : origin,
-            direction  : direction,
-            range_min  : range_min,
-            range_max  : range_max};
+        let test_geometry = RayTestGeometry::with_system_bounds(
+            system_bounds,
+            origin,
+            direction,
+            range_min,
+            range_max);
 
         self.test(
             &test_geometry,

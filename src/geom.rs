@@ -3,7 +3,7 @@ use super::traits::{Cast, Containment, MaxAxis, Quantize, QuantizeResult};
 
 use cgmath::{BaseFloat, Point2, Vector2, Point3, Vector3};
 use cgmath::prelude::*;
-use num_traits::{NumAssignOps, NumCast, PrimInt, Unsigned};
+use num_traits::{Float, NumAssignOps, NumCast, PrimInt, Unsigned};
 use smallvec::SmallVec;
 
 use std::fmt::Debug;
@@ -289,11 +289,51 @@ where
     Point: EuclideanSpace,
     Point::Scalar: BaseFloat
 {
-    pub cell_bounds: Bounds<Point>,
-    pub origin: Point,
-    pub direction: Point::Diff,
-    pub range_min: Point::Scalar,
-    pub range_max: Point::Scalar
+    cell_bounds: Bounds<Point>,
+    origin: Point,
+    direction: Point::Diff,
+    range_min: Point::Scalar,
+    range_max: Point::Scalar
+}
+
+impl<Point> RayTestGeometry<Point>
+    where
+        Point: EuclideanSpace,
+        Point::Scalar: BaseFloat
+{
+    /// Construct ray test geometry
+    /// 
+    /// `range_min` and `range_max` may be infinity or negative infinity, in which case
+    /// the ray will be clamped to system bounds
+    pub fn with_system_bounds(
+        system_bounds: Bounds<Point>,
+        origin: Point,
+        direction: Point::Diff,
+        mut range_min: Point::Scalar,
+        mut range_max: Point::Scalar) -> Self
+    where
+        Point::Diff: ElementWise + std::ops::Index<usize, Output = Point::Scalar>,
+    {
+        let distance_0 = (system_bounds.min - origin).div_element_wise(direction);
+        let distance_1 = (system_bounds.max - origin).div_element_wise(direction);
+        for axis in 0..3 {
+            let is_forward = direction[axis] > Point::Scalar::zero();
+            if is_forward {
+                range_min = range_min.max(distance_0[axis]);
+                range_max = range_max.min(distance_1[axis]);
+            } else {
+                range_min = range_min.max(distance_1[axis]);
+                range_max = range_max.min(distance_0[axis]);
+            }
+        }
+
+        Self{
+            cell_bounds: system_bounds,
+            origin     : origin,
+            direction  : direction,
+            range_min  : range_min,
+            range_max  : range_max}
+    }
 }
 
 impl<Scalar> TestGeometry for RayTestGeometry<Point3<Scalar>>
