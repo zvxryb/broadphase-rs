@@ -1,7 +1,7 @@
 use super::index::SpatialIndex;
 use super::traits::{Cast, Containment, MaxAxis, Quantize, QuantizeResult};
 
-use cgmath::{Point2, Vector2, Point3, Vector3};
+use cgmath::{BaseFloat, Point2, Vector2, Point3, Vector3};
 use cgmath::prelude::*;
 use num_traits::{NumAssignOps, NumCast, PrimInt, Unsigned};
 use smallvec::SmallVec;
@@ -107,9 +107,13 @@ where
         self.max - self.min
     }
 
+    pub fn center(self) -> Point {
+        self.min.midpoint(self.max)
+    }
+
     pub fn normalize_point(self, point: Point) -> Point
     where
-        Point::Scalar: cgmath::BaseFloat,
+        Point::Scalar: BaseFloat,
         Point::Diff: ElementWise
     {
         EuclideanSpace::from_vec((point - self.min).div_element_wise(self.size()))
@@ -117,7 +121,7 @@ where
 
     pub fn normalize_to_system(self, system_bounds: Bounds<Point>) -> Bounds<Point>
     where
-        Point::Scalar: cgmath::BaseFloat,
+        Point::Scalar: BaseFloat,
         Point::Diff: ElementWise
     {
         Bounds{
@@ -155,7 +159,7 @@ where
 
 impl<Scalar> QuantizeResult for Point2<Scalar>
 where 
-    Scalar: cgmath::BaseFloat + QuantizeResult,
+    Scalar: BaseFloat + QuantizeResult,
     Scalar::Quantized: PrimInt
 {
     type Quantized = Point2<Scalar::Quantized>;
@@ -163,7 +167,7 @@ where
 
 impl<Scalar> QuantizeResult for Point3<Scalar>
 where 
-    Scalar: cgmath::BaseFloat + QuantizeResult,
+    Scalar: BaseFloat + QuantizeResult,
     Scalar::Quantized: PrimInt
 {
     type Quantized = Point3<Scalar::Quantized>;
@@ -178,9 +182,9 @@ where
 
 impl<Point, Scalar> Quantize for Bounds<Point>
 where
-    Point: cgmath::EuclideanSpace<Scalar = Scalar> + cgmath::ElementWise<Scalar> + QuantizeResult + Cast<<Point as QuantizeResult>::Quantized>,
+    Point: EuclideanSpace<Scalar = Scalar> + ElementWise<Scalar> + QuantizeResult + Cast<<Point as QuantizeResult>::Quantized>,
     <Point as QuantizeResult>::Quantized: ElementWise<Scalar::Quantized>,
-    Scalar: cgmath::BaseFloat + QuantizeResult,
+    Scalar: BaseFloat + QuantizeResult,
     Scalar::Quantized: PrimInt + NumCast
 {
     fn quantize(self) -> Option<Self::Quantized> {
@@ -263,6 +267,76 @@ where
         }
 
         indices
+    }
+}
+
+/// [`Layer::test`]: struct.Layer.html#method.test
+/// A trait for implementing individual geometry tests
+/// 
+/// See [`Layer::test`]. This is a low-level interface and should generally not be directly
+/// implemented by users
+pub trait TestGeometry: Sized {
+    type SubdivideResult: AsRef<[Option<Self>]>;
+
+    /// Subdivide this geometry, returning `None` for empty cells
+    fn subdivide(&self) -> Self::SubdivideResult;
+}
+
+/// [`TestGeometry`]: trait.TestGeometry.html
+/// A type implementing [`TestGeometry`] for rays
+pub struct RayTestGeometry<Point>
+where
+    Point: EuclideanSpace,
+    Point::Scalar: BaseFloat
+{
+    pub cell_bounds: Bounds<Point>,
+    pub origin: Point,
+    pub direction: Point::Diff,
+    pub range_min: Point::Scalar,
+    pub range_max: Point::Scalar
+}
+
+impl<Scalar> TestGeometry for RayTestGeometry<Point3<Scalar>>
+where
+    Scalar: BaseFloat
+{
+    type SubdivideResult = [Option<Self>; 8];
+
+    fn subdivide(&self) -> Self::SubdivideResult {
+        let center = self.cell_bounds.center();
+        let distance = (self.cell_bounds.center() - self.origin).div_element_wise(self.direction);
+        let mut results: [Option<Self>; 8] = [None, None, None, None, None, None, None, None];
+        for cell in 0..8 {
+            let mut range_min = self.range_min;
+            let mut range_max = self.range_max;
+            for axis in 0..3 {
+                let side = cell & (1 << axis) != 0;
+                let is_towards = self.direction[axis] > Scalar::zero() && !side;
+                if is_towards {
+                    range_max = range_max.min(distance[axis]);
+                } else {
+                    range_min = range_min.max(distance[axis]);
+                }
+            }
+            if range_max > range_min {
+                let mut bounds = self.cell_bounds;
+                for axis in 0..3 {
+                    let side = cell & (1 << axis) != 0;
+                    if side {
+                        bounds.min[axis] = center[axis];
+                    } else {
+                        bounds.max[axis] = center[axis];
+                    }
+                }
+                results[cell] = Some(Self{
+                    cell_bounds: bounds,
+                    origin     : self.origin,
+                    direction  : self.direction,
+                    range_min  : range_min,
+                    range_max  : range_max});
+            }
+        }
+        results
     }
 }
 

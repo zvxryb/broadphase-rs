@@ -19,18 +19,39 @@ use std::ops::Shl;
 /// 
 /// Currently, requirement #3 (truncating origin) is not the responsibility of the particular `SpatialIndex`
 /// implementation &mdash; an appropriately-truncated value must be passed as an argument to `set_origin`
+/// 
+/// `Ord` should be implemented such that an X-bit is lower significance (changes more rapidly) than the
+/// corresponding a Y-bit (which should, likewise, be lower significance than the corresponding Z-bit for
+/// 3D indices)
+/// 
+/// `<SpatialIndex as Default>`::default() is required to return an index which encompasses the entire system
+/// bounds (i.e. zero origin and zero depth)
 
 pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
     type Scalar: Debug + NumAssignOps + PrimInt + Unsigned + Shl<u32, Output = Self::Scalar>;
     type Diff: cgmath::VectorSpace<Scalar = Self::Scalar>;
     type Point: Copy + EuclideanSpace<Diff = Self::Diff, Scalar = Self::Scalar>;
 
+    /// clamps a depth value to the representable range
     fn clamp_depth(u32) -> u32;
+
     fn origin(self) -> Self::Point;
     fn depth(self) -> u32;
+
     fn set_origin(self, Self::Point) -> Self;
     fn set_depth(self, u32) -> Self;
+
+    type SubdivideResult: AsRef<[Self]>;
+
+    /// Subdivide the cell represented by this index into cells of `depth + 1`
+    /// 
+    /// This is required to return results in sorted order.  Returns `None` if depth limit has been reached.
+    fn subdivide(self) -> Option<Self::SubdivideResult>;
+
+    /// Check if two indices represent overlapping regions of space
     fn overlaps(self, other: Self) -> bool;
+
+    /// Check if two indices would fall into the same cell at a given (truncated) depth
     fn same_cell_at_depth(lhs: Self, rhs: Self, depth: u32) -> bool;
 }
 
@@ -93,7 +114,7 @@ impl SpatialIndex for Index64_3D {
     type Point = Point3<u32>;
 
     fn clamp_depth(depth: u32) -> u32 {
-        std::cmp::min(depth, Self::ORIGIN_BITS)
+        std::cmp::min(depth, Self::AXIS_BITS)
     }
 
     fn origin(self) -> Point3<u32> {
@@ -127,6 +148,26 @@ impl SpatialIndex for Index64_3D {
         index |= Self::DEPTH_MASK & (
             <u64 as From<u32>>::from(Self::clamp_depth(depth)) << Self::DEPTH_SHIFT);
         Self(index)
+    }
+
+    type SubdivideResult = [Self; 8];
+    fn subdivide(self) -> Option<[Self; 8]> {
+        let depth = self.depth();
+        if depth < Self::AXIS_BITS {
+            let Self(index) = self;
+            Some([
+                Self(index | (0b000 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
+                Self(index | (0b001 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
+                Self(index | (0b010 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
+                Self(index | (0b011 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
+                Self(index | (0b100 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
+                Self(index | (0b101 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
+                Self(index | (0b110 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
+                Self(index | (0b111 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1))))
+            ])
+        } else {
+            None
+        }
     }
 
     fn overlaps(self, other: Self) -> bool {

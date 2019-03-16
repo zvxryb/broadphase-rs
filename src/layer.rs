@@ -1,4 +1,4 @@
-use super::geom::{Bounds, LevelIndexBounds};
+use super::geom::{Bounds, LevelIndexBounds, RayTestGeometry, TestGeometry};
 use super::index::SpatialIndex;
 use super::traits::{Containment, ObjectID, Quantize, QuantizeResult};
 
@@ -36,6 +36,7 @@ where
     min_depth: u32,
     tree: (Vec<(Index, ID)>, bool),
     collisions: Vec<(ID, ID)>,
+    test_results: Vec<ID>,
     invalid: Vec<ID>,
 
     #[cfg(feature="parallel")]
@@ -144,6 +145,118 @@ where
             tree.sort_unstable();
             *sorted = true;
         }
+    }
+
+    fn test_impl<TestGeom: TestGeometry>(
+        results: &mut Vec<ID>,
+        tree: &[(Index, ID)],
+        cell: Index,
+        test_geometry: &TestGeom,
+        max_depth: Option<u32>)
+    {
+        use std::cmp::Ordering::{Less, Greater};
+
+        if tree.is_empty() { return; }
+
+        if tree.first().unwrap().0 < cell || !cell.overlaps(tree.last().unwrap().0) {
+            panic!("test_impl called with non-overlapping indices");
+        }
+
+        let depth = cell.depth();
+        if let Some(max_depth) = max_depth {
+            if depth >= max_depth {
+                results.extend(tree.iter().map(|(_, id)| id));
+                return;
+            }
+        }
+
+        if let Some(sub_cells) = cell.subdivide() {
+            let mut groups = sub_cells.as_ref().iter()
+                .map(|cell| Some(*cell))
+                .chain((0..1).map(|_| None))
+                .scan(tree, |tree, cell| {
+                    if let Some(cell) = cell {
+                        let i = tree.binary_search_by(|&(index, _)| {
+                            if index < cell { Less } else { Greater }
+                        }).err().unwrap();
+                        let (head, tail) = tree.split_at(i);
+                        *tree = tail;
+                        Some(head)
+                    } else {
+                        Some(tree)
+                    }
+                });
+            results.extend(groups.next().unwrap().iter().map(|(_, id)| id));
+            sub_cells.as_ref().iter()
+                .zip(test_geometry.subdivide().as_ref().iter())
+                .zip(groups)
+                .for_each(|((&cell, test_geometry), tree)| {
+                    if let Some(test_geometry) = test_geometry {
+                        Self::test_impl(results, tree, cell, test_geometry, max_depth)
+                    }
+                });
+        } else {
+            results.extend(tree.iter().map(|(_, id)| id));
+        }
+    }
+
+    /// [`TestGeometry::subdivide`]: trait.TestGeometry.html#tymethod.subdivide
+    /// Run a single test on some geometry
+    /// 
+    /// This occurs by repeatedly subdividing both this `Layer`'s index-ID list and the provided
+    /// `test_geometry`, returning any items at a given depth where both the resulting index list
+    /// is non-empty and [`TestGeometry::subdivide`] returns a result
+    pub fn test<'a, TestGeom>(
+        &'a mut self,
+        test_geometry: &TestGeom,
+        max_depth: Option<u32>) -> &'a Vec<ID>
+    where
+        TestGeom: TestGeometry
+    {
+        self.sort();
+
+        let (tree, _) = &self.tree;
+        Self::test_impl(
+            &mut self.test_results,
+            tree,
+            Index::default(),
+            test_geometry,
+            max_depth);
+
+        &self.test_results
+    }
+
+    /// [`Layer::test`]: struct.Layer.html#method.test
+    /// [`Layer::extend`]: struct.Layer.html#method.extend
+    /// A special case of [`Layer::test`] for ray-testing
+    /// 
+    /// The `system_bounds` provided to this method should, in most cases, be identical to the
+    /// `system_bounds` provided to [`Layer::extend`]
+    pub fn test_ray<'a, Point_>(
+        &'a mut self,
+        system_bounds: Bounds<Point_>,
+        origin   : Point_,
+        direction: Point_::Diff,
+        range_min: Point_::Scalar,
+        range_max: Point_::Scalar,
+        max_depth: Option<u32>) -> &'a Vec<ID>
+    where
+        Point_: EuclideanSpace,
+        Point_::Scalar: cgmath::BaseFloat,
+        RayTestGeometry<Point_>: TestGeometry
+    {
+        let test_geometry: RayTestGeometry<Point_> = RayTestGeometry{
+            cell_bounds: system_bounds,
+            origin     : origin,
+            direction  : direction,
+            range_min  : range_min,
+            range_max  : range_max};
+
+        self.test(
+            &test_geometry,
+            max_depth);
+
+        &self.test_results
     }
 
     /// Detects collisions between all objects in the `Layer`
@@ -274,7 +387,8 @@ where
 pub struct LayerBuilder {
     min_depth: u32,
     index_capacity: Option<usize>,
-    collision_capacity: Option<usize>
+    collision_capacity: Option<usize>,
+    test_capacity: Option<usize>
 }
 
 impl LayerBuilder {
@@ -297,6 +411,11 @@ impl LayerBuilder {
         self
     }
 
+    pub fn with_test_capacity(&mut self, capacity: usize) -> &mut Self {
+        self.test_capacity = Some(capacity);
+        self
+    }
+
     pub fn build<Index, ID>(&self) -> Layer<Index, ID>
     where
         Index: SpatialIndex,
@@ -310,6 +429,10 @@ impl LayerBuilder {
                     None => Vec::new()
                 }, true),
             collisions: match self.collision_capacity {
+                    Some(capacity) => Vec::with_capacity(capacity),
+                    None => Vec::new()
+                },
+            test_results: match self.test_capacity {
                     Some(capacity) => Vec::with_capacity(capacity),
                     None => Vec::new()
                 },
