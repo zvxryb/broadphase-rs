@@ -3,7 +3,7 @@
 use cgmath::{Point3, Vector3};
 use cgmath::prelude::*;
 use num_traits::{NumAssignOps, PrimInt, Unsigned};
-use std::fmt::Debug;
+use std::fmt::{Debug, Formatter};
 use std::ops::Shl;
 
 /// An index representing an object's position and scale
@@ -57,7 +57,7 @@ pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
 
 /// A 64-bit 3D index which provides 19 bits' precision per axis
 
-#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Index64_3D(u64);
 
 impl Index64_3D {
@@ -108,6 +108,20 @@ impl Index64_3D {
     }
 }
 
+impl Debug for Index64_3D {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let Self(index) = self;
+        let origin_bits = (index & Self::ORIGIN_MASK) >> Self::ORIGIN_SHIFT;
+        let origin = self.origin();
+        write!(f, "Index64_3D{{origin={{0o{:019o}, <0x{:08x}, 0x{:08x}, 0x{:08x}>}}, depth={:}}}",
+            origin_bits,
+            origin.x,
+            origin.y,
+            origin.z,
+            self.depth())
+    }
+}
+
 impl SpatialIndex for Index64_3D {
     type Scalar = u32;
     type Diff = Vector3<u32>;
@@ -155,15 +169,16 @@ impl SpatialIndex for Index64_3D {
         let depth = self.depth();
         if depth < Self::AXIS_BITS {
             let Self(index) = self;
+            let shift = Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * (depth + 1));
             Some([
-                Self(index | (0b000 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
-                Self(index | (0b001 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
-                Self(index | (0b010 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
-                Self(index | (0b011 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
-                Self(index | (0b100 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
-                Self(index | (0b101 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
-                Self(index | (0b110 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1)))),
-                Self(index | (0b111 << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - (3 * depth + 1))))
+                Self(index | (0b000u64 << shift)).set_depth(depth + 1),
+                Self(index | (0b001u64 << shift)).set_depth(depth + 1),
+                Self(index | (0b010u64 << shift)).set_depth(depth + 1),
+                Self(index | (0b011u64 << shift)).set_depth(depth + 1),
+                Self(index | (0b100u64 << shift)).set_depth(depth + 1),
+                Self(index | (0b101u64 << shift)).set_depth(depth + 1),
+                Self(index | (0b110u64 << shift)).set_depth(depth + 1),
+                Self(index | (0b111u64 << shift)).set_depth(depth + 1)
             ])
         } else {
             None

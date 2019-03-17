@@ -12,7 +12,7 @@ use rand::prelude::*;
 use specs::prelude::*;
 
 use broadphase::Bounds;
-use cgmath::{Point2, Point3, Vector2};
+use cgmath::{Point2, Point3, Vector2, Vector3};
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System as SystemAlloc};
 use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
@@ -108,6 +108,18 @@ impl Default for BallCount {
     }
 }
 
+struct Color(ggez::graphics::Color);
+
+impl Default for Color {
+    fn default() -> Self {
+        Self(ggez::graphics::WHITE)
+    }
+}
+
+impl specs::Component for Color {
+    type Storage = specs::VecStorage<Self>;
+}
+
 struct Lifetime(Duration);
 
 impl specs::Component for Lifetime {
@@ -155,6 +167,7 @@ fn create_ball<T: specs::Builder>(
         .with(lifetime)
         .with(position)
         .with(radius)
+        .with(Color::default())
         .build()
 }
 
@@ -262,11 +275,16 @@ impl<'a> specs::System<'a> for Collisions {
         specs::Read<'a, CollisionSystemConfig>,
         specs::WriteStorage<'a, VerletPosition>,
         specs::ReadStorage<'a, Radius>,
+        specs::WriteStorage<'a, Color>
     );
 
     #[inline(never)]
     fn run(&mut self, data: Self::SystemData) {
-        let (entities, screen_coords, collision_config, mut positions, radii) = data;
+        let (entities, screen_coords, collision_config, mut positions, radii, mut colors) = data;
+
+        for Color(color) in (&mut colors).join() {
+            *color = ggez::graphics::Color::new(1f32, 0.5f32, 0f32, 1f32);
+        }
 
         let start = Instant::now();
 
@@ -274,6 +292,7 @@ impl<'a> specs::System<'a> for Collisions {
             ALLOCATOR.clear_and_get_stats();
 
             self.system.clear();
+
             self.system.extend(collision_config.bounds,
                 (&entities, &positions, &radii).join()
                     .map(|(ent, &pos, &Radius(r))| {
@@ -281,6 +300,20 @@ impl<'a> specs::System<'a> for Collisions {
                             min: Point3::new(pos.1.x - r, pos.1.y - r, 0.0f32),
                             max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
                         (bounds, ent.id())}));
+
+            self.system.par_sort();
+
+            self.system.test_ray(
+                collision_config.bounds,
+                Point3 ::new(0f32, 300f32, 0f32),
+                Vector3::new(1f32, 0f32, 0f32),
+                0f32, std::f32::INFINITY, None)
+                .iter()
+                .for_each(|&id| {
+                    let ent = entities.entity(id);
+                    let Color(color) = colors.get_mut(ent).unwrap();
+                    *color = ggez::graphics::Color::new(0.5f32, 1f32, 0f32, 1f32);
+                });
 
             self.collisions.clear();
             self.collisions.extend(self.system.par_scan()
@@ -304,6 +337,7 @@ impl<'a> specs::System<'a> for Collisions {
                         let u = r1.powi(3) / (r0.powi(3) + r1.powi(3));
                         Some((ent0, ent1, u, n * d))
                     }}));
+
             let (alloc_count, alloc_time) = ALLOCATOR.clear_and_get_stats();
             print!("allocs: ({:3}, {:8}ns)     ", alloc_count, alloc_time);
         } else {
@@ -412,7 +446,7 @@ impl ggez::event::EventHandler for GameState {
 
     #[inline(never)]
     fn draw(&mut self, context: &mut ggez::Context) -> ggez::GameResult<()> {
-        use ggez::graphics::*;
+        use ggez::graphics::{BLACK, clear, draw, DrawMode, MeshBuilder, present, Rect};
 
         clear(context, BLACK);
 
@@ -423,13 +457,14 @@ impl ggez::event::EventHandler for GameState {
         {
             let positions = self.world.read_storage::<VerletPosition>();
             let radii     = self.world.read_storage::<Radius>();
+            let colors    = self.world.read_storage::<Color>();
 
-            let iter = &mut (&positions, &radii).join().peekable();
+            let iter = &mut (&positions, &radii, &colors).join().peekable();
             while let Some(_) = iter.peek() {
                 let mut mesh_builder = MeshBuilder::new();
-                for (&pos, &Radius(r)) in iter.take(500) {
+                for (&pos, &Radius(r), &Color(color)) in iter.take(500) {
                     let pos_ = pos.1 + (pos.1 - pos.0) * u;
-                    mesh_builder.circle::<[f32; 2]>(DrawMode::stroke(1.5f32), pos_.into(), r, 0.7f32, Color::new(1f32, 0.5f32, 0f32, 1f32));
+                    mesh_builder.circle::<[f32; 2]>(DrawMode::stroke(1.5f32), pos_.into(), r, 0.7f32, color);
                 }
                 let mesh = mesh_builder.build(context)?;
                 draw(context, &mesh, ([0f32, 0f32],))?;
@@ -453,7 +488,8 @@ impl ggez::event::EventHandler for GameState {
                         scale.y * origin.y + offset.y,
                         scale.x * size,
                         scale.y * size);
-                    mesh_builder.rectangle(DrawMode::stroke(1.5f32), rect, Color::new(0.3f32, 0.3f32, 0.3f32, 1f32));
+                    mesh_builder.rectangle(DrawMode::stroke(1.5f32), rect,
+                        ggez::graphics::Color::new(0.3f32, 0.3f32, 0.3f32, 1f32));
                 }
                 let mesh = mesh_builder.build(context)?;
                 draw(context, &mesh, ([0f32, 0f32],))?;
@@ -490,6 +526,7 @@ fn main() {
     state.world.register::<Lifetime>();
     state.world.register::<VerletPosition>();
     state.world.register::<Radius>();
+    state.world.register::<Color>();
 
     ggez::event::run(&mut context, &mut event_loop, &mut state).expect("failed to run game");
 }

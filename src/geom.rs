@@ -6,7 +6,7 @@ use cgmath::prelude::*;
 use num_traits::{Float, NumAssignOps, NumCast, PrimInt, Unsigned};
 use smallvec::SmallVec;
 
-use std::fmt::Debug;
+use std::fmt::{Debug, Display, Formatter};
 use std::ops::Shl;
 
 impl<T> MaxAxis<T> for Vector2<T>
@@ -275,7 +275,7 @@ where
 /// 
 /// See [`Layer::test`]. This is a low-level interface and should generally not be directly
 /// implemented by users
-pub trait TestGeometry: Sized {
+pub trait TestGeometry: Sized + Debug {
     type SubdivideResult: AsRef<[Option<Self>]>;
 
     /// Subdivide this geometry, returning `None` for empty cells
@@ -287,7 +287,7 @@ pub trait TestGeometry: Sized {
 pub struct RayTestGeometry<Point>
 where
     Point: EuclideanSpace,
-    Point::Scalar: BaseFloat
+    Point::Scalar: BaseFloat + Display
 {
     cell_bounds: Bounds<Point>,
     origin: Point,
@@ -296,10 +296,33 @@ where
     range_max: Point::Scalar
 }
 
+impl<Scalar> Debug for RayTestGeometry<Point3<Scalar>>
+where
+    Scalar: BaseFloat + Display
+{
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "RayTestGeometry{{{{({:}, {:}, {:}) - ({:}, {:}, {:})}}, ({:}, {:}, {:}), ({:}, {:}, {:}), {{{:}-{:}}}}}",
+            self.cell_bounds.min.x,
+            self.cell_bounds.min.y,
+            self.cell_bounds.min.z,
+            self.cell_bounds.max.x,
+            self.cell_bounds.max.y,
+            self.cell_bounds.max.z,
+            self.origin.x,
+            self.origin.y,
+            self.origin.z,
+            self.direction.x,
+            self.direction.y,
+            self.direction.z,
+            self.range_min,
+            self.range_max)
+    }
+}
+
 impl<Point> RayTestGeometry<Point>
     where
         Point: EuclideanSpace,
-        Point::Scalar: BaseFloat
+        Point::Scalar: BaseFloat + Display
 {
     /// Construct ray test geometry
     /// 
@@ -312,19 +335,20 @@ impl<Point> RayTestGeometry<Point>
         mut range_min: Point::Scalar,
         mut range_max: Point::Scalar) -> Self
     where
-        Point::Diff: ElementWise + std::ops::Index<usize, Output = Point::Scalar>,
+        Point: Debug,
+        Point::Diff: ElementWise + std::ops::Index<usize, Output = Point::Scalar> + Debug,
     {
         let distance_0 = (system_bounds.min - origin).div_element_wise(direction);
         let distance_1 = (system_bounds.max - origin).div_element_wise(direction);
         for axis in 0..3 {
             let is_forward = direction[axis] > Point::Scalar::zero();
-            if is_forward {
-                range_min = range_min.max(distance_0[axis]);
-                range_max = range_max.min(distance_1[axis]);
-            } else {
-                range_min = range_min.max(distance_1[axis]);
-                range_max = range_max.min(distance_0[axis]);
-            }
+            let (d0, d1) = if is_forward {
+                    (distance_0[axis], distance_1[axis])
+                } else {
+                    (distance_1[axis], distance_0[axis])
+                };
+            if d0.is_finite() { range_min = range_min.max(d0); }
+            if d1.is_finite() { range_max = range_max.min(d1); }
         }
 
         Self{
@@ -338,7 +362,7 @@ impl<Point> RayTestGeometry<Point>
 
 impl<Scalar> TestGeometry for RayTestGeometry<Point3<Scalar>>
 where
-    Scalar: BaseFloat
+    Scalar: BaseFloat + Display
 {
     type SubdivideResult = [Option<Self>; 8];
 
@@ -351,11 +375,16 @@ where
             let mut range_max = self.range_max;
             for axis in 0..3 {
                 let side = cell & (1 << axis) != 0;
-                let is_towards = self.direction[axis] > Scalar::zero() && !side;
-                if is_towards {
-                    range_max = range_max.min(distance[axis]);
-                } else {
-                    range_min = range_min.max(distance[axis]);
+                if distance[axis].is_finite() {
+                    let is_towards = (self.direction[axis] > Scalar::zero()) != side;
+                    if is_towards {
+                        range_max = range_max.min(distance[axis]);
+                    } else {
+                        range_min = range_min.max(distance[axis]);
+                    }
+                } else if (self.origin[axis] > center[axis]) != side {
+                    range_min = Scalar::infinity();
+                    range_max = Scalar::neg_infinity();
                 }
             }
             if range_max > range_min {

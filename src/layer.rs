@@ -56,13 +56,11 @@ where
         self.tree.0.iter()
     }
 
-    /// Clear all internal state
+    /// Clear all index-ID pairs
     pub fn clear(&mut self) {
         let (tree, sorted) = &mut self.tree;
         tree.clear();
         *sorted = true;
-        self.collisions.clear();
-        self.invalid.clear();
     }
 
     /// Append multiple objects to the `Layer`
@@ -191,8 +189,10 @@ where
                 .zip(test_geometry.subdivide().as_ref().iter())
                 .zip(groups)
                 .for_each(|((&cell, test_geometry), tree)| {
-                    if let Some(test_geometry) = test_geometry {
-                        Self::test_impl(results, tree, cell, test_geometry, max_depth)
+                    if !tree.is_empty() {
+                        if let Some(test_geometry) = test_geometry {
+                            Self::test_impl(results, tree, cell, test_geometry, max_depth)
+                        }
                     }
                 });
         } else {
@@ -214,6 +214,8 @@ where
         TestGeom: TestGeometry
     {
         self.sort();
+
+        self.test_results.clear();
 
         let (tree, _) = &self.tree;
         Self::test_impl(
@@ -242,9 +244,9 @@ where
         range_max: Point_::Scalar,
         max_depth: Option<u32>) -> &'a Vec<ID>
     where
-        Point_: EuclideanSpace,
-        Point_::Diff: ElementWise + std::ops::Index<usize, Output = Point_::Scalar>,
-        Point_::Scalar: cgmath::BaseFloat,
+        Point_: EuclideanSpace + Debug,
+        Point_::Diff: ElementWise + std::ops::Index<usize, Output = Point_::Scalar> + Debug,
+        Point_::Scalar: cgmath::BaseFloat + std::fmt::Display,
         RayTestGeometry<Point_>: TestGeometry
     {
         let test_geometry = RayTestGeometry::with_system_bounds(
@@ -279,6 +281,9 @@ where
         F: FnMut(ID, ID) -> bool
     {
         self.sort();
+        
+        self.collisions.clear();
+        self.invalid.clear();
 
         let (tree, _) = &self.tree;
         Self::scan_impl(tree.as_slice(), &mut self.collisions, filter);
@@ -311,6 +316,8 @@ where
     {
         self.par_sort();
 
+        self.collisions.clear();
+        self.invalid.clear();
         for set in self.collisions_tls.iter_mut() {
             set.borrow_mut().clear();
         }

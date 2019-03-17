@@ -35,7 +35,7 @@
 //! # {
 //! let mut layer: Layer<Index64_3D, ID> = LayerBuilder::new().build();
 //! 
-//! // clears all internal state:
+//! // clears existing object index-ID pairs:
 //! layer.clear();
 //! 
 //! // appends an iterator of object bounds-ID pairs to the layer:
