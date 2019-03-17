@@ -201,11 +201,15 @@ where
     }
 
     /// [`TestGeometry::subdivide`]: trait.TestGeometry.html#tymethod.subdivide
+    /// [`par_sort`]: struct.Layer.html#method.par_sort
     /// Run a single test on some geometry
     /// 
     /// This occurs by repeatedly subdividing both this `Layer`'s index-ID list and the provided
     /// `test_geometry`, returning any items at a given depth where both the resulting index list
     /// is non-empty and [`TestGeometry::subdivide`] returns a result
+    /// 
+    /// _note: this method may do an implicit, non-parallel sort; you may call [`par_sort`] prior
+    /// to calling this method to perform a parallel sort instead_
     pub fn test<'a, TestGeom>(
         &'a mut self,
         test_geometry: &TestGeom,
@@ -230,11 +234,15 @@ where
 
     /// [`Layer::test`]: struct.Layer.html#method.test
     /// [`Layer::extend`]: struct.Layer.html#method.extend
+    /// [`par_sort`]: struct.Layer.html#method.par_sort
     /// [`RayTestGeometry`]: struct.RayTestGeometry.html
     /// A special case of [`Layer::test`] for ray-testing, see [`RayTestGeometry`]
     /// 
     /// The `system_bounds` provided to this method should, in most cases, be identical to the
     /// `system_bounds` provided to [`Layer::extend`]
+    /// 
+    /// _note: this method may do an implicit, non-parallel sort; you may call [`par_sort`] prior
+    /// to calling this method to perform a parallel sort instead_
     pub fn test_ray<'a, Point_>(
         &'a mut self,
         system_bounds: Bounds<Point_>,
