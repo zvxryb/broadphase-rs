@@ -237,14 +237,28 @@ where
 /// See [`Layer::test`]. This is a low-level interface and should generally not be directly
 /// implemented by users
 pub trait TestGeometry: Sized + Debug {
-    type SubdivideResult: AsRef<[Option<Self>]>;
+    type SubdivideResult: AsRef<[Self]>;
+    type TestOrder: AsRef<[usize]>;
 
-    /// Subdivide this geometry, returning `None` for empty cells
+    /// [`SpatialIndex::subdivide`]: trait.SpatialIndex.html#tymethod.subdivide
+    /// [`test_order`]: #tymethod.test_order
+    /// Subdivide this geometry
+    /// 
+    /// This is required to return results in the same order as [`SpatialIndex::subdivide`], both
+    /// results will be reordered as given by [`test_order`]
     fn subdivide(&self) -> Self::SubdivideResult;
+
+    /// The order in which to test cells
+    /// 
+    /// This is used to optimize tests where only the single, nearest, result should be returned
+    fn test_order(&self) -> Self::TestOrder;
+
+    fn should_test(&self, nearest: Option<f32>) -> bool;
 }
 
 /// [`TestGeometry`]: trait.TestGeometry.html
 /// A type implementing [`TestGeometry`] for rays
+#[derive(Clone)]
 pub struct RayTestGeometry<Point>
 where
     Point: EuclideanSpace<Scalar = f32>
@@ -317,48 +331,80 @@ where
 }
 
 impl TestGeometry for RayTestGeometry<Point3<f32>> {
-    type SubdivideResult = [Option<Self>; 8];
+    type SubdivideResult = [Self; 8];
+    type TestOrder = [usize; 8];
 
     fn subdivide(&self) -> Self::SubdivideResult {
         let center = self.cell_bounds.center();
         let distance = (self.cell_bounds.center() - self.origin).div_element_wise(self.direction);
-        let mut results: [Option<Self>; 8] = [None, None, None, None, None, None, None, None];
+        let mut results: [Self; 8] = [
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone()
+        ];
         for cell in 0..8 {
-            let mut range_min = self.range_min;
-            let mut range_max = self.range_max;
+            let result = &mut results[cell];
+            let range_min = &mut result.range_min;
+            let range_max = &mut result.range_max;
             for axis in 0..3 {
                 let side = cell & (1 << axis) != 0;
                 if distance[axis].is_finite() {
                     let is_towards = (self.direction[axis] > 0f32) != side;
                     if is_towards {
-                        range_max = range_max.min(distance[axis]);
+                        *range_max = range_max.min(distance[axis]);
                     } else {
-                        range_min = range_min.max(distance[axis]);
+                        *range_min = range_min.max(distance[axis]);
                     }
                 } else if (self.origin[axis] > center[axis]) != side {
-                    range_min = std::f32::INFINITY;
-                    range_max = std::f32::NEG_INFINITY;
+                    *range_min = std::f32::INFINITY;
+                    *range_max = std::f32::NEG_INFINITY;
                 }
             }
-            if range_max > range_min {
-                let mut bounds = self.cell_bounds;
-                for axis in 0..3 {
-                    let side = cell & (1 << axis) != 0;
-                    if side {
-                        bounds.min[axis] = center[axis];
-                    } else {
-                        bounds.max[axis] = center[axis];
-                    }
+            let bounds = &mut result.cell_bounds;
+            for axis in 0..3 {
+                let side = cell & (1 << axis) != 0;
+                if side {
+                    bounds.min[axis] = center[axis];
+                } else {
+                    bounds.max[axis] = center[axis];
                 }
-                results[cell] = Some(Self{
-                    cell_bounds: bounds,
-                    origin     : self.origin,
-                    direction  : self.direction,
-                    range_min  : range_min,
-                    range_max  : range_max});
             }
         }
         results
+    }
+
+    fn test_order(&self) -> Self::TestOrder {
+        let abs = self.direction.map(|x| x.abs());
+        let axes = if abs.x <= abs.y && abs.x <= abs.z {
+            if abs.y <= abs.z { [0, 1, 2] } else { [0, 2, 1] }
+        } else if abs.y <= abs.z {
+            if abs.x <= abs.z { [1, 0, 2] } else { [1, 2, 0] }
+        } else {
+            if abs.x <= abs.y { [2, 0, 1] } else { [2, 1, 0] }
+        };
+
+        let mut order: [usize; 8] = [0; 8];
+        for i in 0..8 {
+            let i0 = (i & 1 != 0) == (self.direction[axes[0]] >= 0f32);
+            let i1 = (i & 2 != 0) == (self.direction[axes[1]] >= 0f32);
+            let i2 = (i & 4 != 0) == (self.direction[axes[2]] >= 0f32);
+            order[i] =
+                ((i0 as usize) << axes[0]) |
+                ((i1 as usize) << axes[1]) |
+                ((i2 as usize) << axes[2])
+        }
+
+        order
+    }
+
+    fn should_test(&self, nearest: Option<f32>) -> bool {
+        return self.range_min <= self.range_max &&
+            nearest.map_or(true, |nearest| self.range_min <= nearest);
     }
 }
 

@@ -153,7 +153,7 @@ where
     {
         use std::cmp::Ordering::{Less, Greater};
 
-        if tree.is_empty() { return; }
+        if tree.is_empty() || !test_geometry.should_test(None) { return; }
 
         if tree.first().unwrap().0 < cell || !cell.overlaps(tree.last().unwrap().0) {
             panic!("test_impl called with non-overlapping indices");
@@ -168,7 +168,7 @@ where
         }
 
         if let Some(sub_cells) = cell.subdivide() {
-            let mut groups = sub_cells.as_ref().iter()
+            let mut sub_trees = sub_cells.as_ref().iter()
                 .map(|cell| Some(*cell))
                 .chain((0..1).map(|_| None))
                 .scan(tree, |tree, cell| {
@@ -183,17 +183,14 @@ where
                         Some(tree)
                     }
                 });
-            results.extend(groups.next().unwrap().iter().map(|(_, id)| id));
-            sub_cells.as_ref().iter()
-                .zip(test_geometry.subdivide().as_ref().iter())
-                .zip(groups)
-                .for_each(|((&cell, test_geometry), tree)| {
-                    if !tree.is_empty() {
-                        if let Some(test_geometry) = test_geometry {
-                            Self::test_impl(results, tree, cell, test_geometry, max_depth)
-                        }
-                    }
-                });
+            results.extend(sub_trees.next().unwrap().iter().map(|(_, id)| id));
+
+            let sub_trees: SmallVec<[_; 8]> = sub_trees.collect();
+            let sub_tests = test_geometry.subdivide();
+
+            for &i in test_geometry.test_order().as_ref() {
+                Self::test_impl(results, sub_trees[i], sub_cells.as_ref()[i], &sub_tests.as_ref()[i], max_depth);
+            }
         } else {
             results.extend(tree.iter().map(|(_, id)| id));
         }
