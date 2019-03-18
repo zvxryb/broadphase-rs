@@ -1,9 +1,10 @@
+// mlodato, 20190317
+
 use super::geom::{Bounds, LevelIndexBounds, RayTestGeometry, TestGeometry};
 use super::index::SpatialIndex;
-use super::traits::{Containment, ObjectID, Quantize, QuantizeResult};
+use super::traits::{Containment, ObjectID, Quantize};
 
 use cgmath::prelude::*;
-use num_traits::NumAssignOps;
 use smallvec::SmallVec;
 
 use std::fmt::Debug;
@@ -67,14 +68,12 @@ where
     /// 
     /// Complex geometry may provide multiple bounds for a single object ID; this usage would be common
     /// for static geometry, as it prevents extraneous self-collisions
-    pub fn extend<Iter, Point_, Scalar_>(&mut self, system_bounds: Bounds<Point_>, objects: Iter)
+    pub fn extend<Iter, Point_>(&mut self, system_bounds: Bounds<Point_>, objects: Iter)
     where
         Iter: std::iter::Iterator<Item = (Bounds<Point_>, ID)>,
-        Point_: EuclideanSpace<Scalar = Scalar_>,
-        Point_::Scalar: cgmath::BaseFloat,
+        Point_: EuclideanSpace<Scalar = f32>,
         Point_::Diff: ElementWise,
-        Scalar_: Debug + NumAssignOps,
-        Bounds<Point_>: Containment + Quantize + QuantizeResult<Quantized = Bounds<Index::Point>>
+        Bounds<Point_>: Containment + Quantize<Quantized = Bounds<Index::Point>>
     {
         let (tree, sorted) = &mut self.tree;
 
@@ -248,13 +247,12 @@ where
         system_bounds: Bounds<Point_>,
         origin   : Point_,
         direction: Point_::Diff,
-        range_min: Point_::Scalar,
-        range_max: Point_::Scalar,
+        range_min: f32,
+        range_max: f32,
         max_depth: Option<u32>) -> &'a Vec<ID>
     where
-        Point_: EuclideanSpace + Debug,
-        Point_::Diff: ElementWise + std::ops::Index<usize, Output = Point_::Scalar> + Debug,
-        Point_::Scalar: cgmath::BaseFloat + std::fmt::Display,
+        Point_: EuclideanSpace<Scalar = f32> + Debug,
+        Point_::Diff: ElementWise + std::ops::Index<usize, Output = f32> + Debug,
         RayTestGeometry<Point_>: TestGeometry
     {
         let test_geometry = RayTestGeometry::with_system_bounds(

@@ -1,13 +1,13 @@
-use super::index::SpatialIndex;
-use super::traits::{Cast, Containment, MaxAxis, Quantize, QuantizeResult};
+// mlodato, 20190317
 
-use cgmath::{BaseFloat, Point2, Vector2, Point3, Vector3};
+use super::index::SpatialIndex;
+use super::traits::{Containment, MaxAxis, Quantize};
+
+use cgmath::{Point2, Vector2, Point3, Vector3};
 use cgmath::prelude::*;
-use num_traits::{Float, NumAssignOps, NumCast, PrimInt, Unsigned};
 use smallvec::SmallVec;
 
-use std::fmt::{Debug, Display, Formatter};
-use std::ops::Shl;
+use std::fmt::{Debug, Formatter};
 
 impl<T> MaxAxis<T> for Vector2<T>
 where
@@ -28,45 +28,18 @@ where
     }
 }
 
-impl<T, U> Cast<Point2<T>> for Point2<U>
-where
-    T: NumCast,
-    U: NumCast + Copy
-{
-    fn cast(self) -> Option<Point2<T>> {
-        Point2::cast(&self)
-    }
-}
-
-impl<T, U> Cast<Point3<T>> for Point3<U>
-where
-    T: NumCast,
-    U: NumCast + Copy
-{
-    fn cast(self) -> Option<Point3<T>> {
-        Point3::cast(&self)
-    }
-}
-
-fn scale_at_depth<T>(depth: u32) -> T
-where
-    T: PrimInt + Unsigned + Shl<u32, Output = T> + Sized
-{
-    let total_bits = 8 * (std::mem::size_of::<T>() as u32);
+fn scale_at_depth(depth: u32) -> u32 {
     if depth == 0 {
         panic!("scale at zero depth would overflow integer");
     }
-    T::one() << (total_bits - depth)
+    1u32 << (32 - depth)
 }
 
-fn truncate_to_depth<T>(x: T, depth: u32) -> T
-where
-    T: PrimInt + Unsigned + Shl<u32, Output = T> + Sized
-{
+fn truncate_to_depth(x: u32, depth: u32) -> u32 {
     if depth == 0 {
         x
     } else {
-        x & !(scale_at_depth::<T>(depth) - T::one())
+        x & !(scale_at_depth(depth) - 1u32)
     }
 }
 
@@ -113,7 +86,6 @@ where
 
     pub fn normalize_point(self, point: Point) -> Point
     where
-        Point::Scalar: BaseFloat,
         Point::Diff: ElementWise
     {
         EuclideanSpace::from_vec((point - self.min).div_element_wise(self.size()))
@@ -121,7 +93,6 @@ where
 
     pub fn normalize_to_system(self, system_bounds: Bounds<Point>) -> Bounds<Point>
     where
-        Point::Scalar: BaseFloat,
         Point::Diff: ElementWise
     {
         Bounds{
@@ -157,57 +128,52 @@ where
     }
 }
 
-impl<Scalar> QuantizeResult for Point2<Scalar>
-where 
-    Scalar: BaseFloat + QuantizeResult,
-    Scalar::Quantized: PrimInt
-{
-    type Quantized = Point2<Scalar::Quantized>;
+impl Quantize for Point2<f32> {
+    type Quantized = Point2<u32>;
+
+    fn quantize(self) -> Option<Self::Quantized> {
+        const MIN_VALUE: f32 = std::u32::MIN as f32;
+        const MAX_VALUE: f32 = (std::u32::MAX - 1u32) as f32;
+        const RANGE: f32 = MAX_VALUE - MIN_VALUE;
+        Point2::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
+    }
 }
 
-impl<Scalar> QuantizeResult for Point3<Scalar>
-where 
-    Scalar: BaseFloat + QuantizeResult,
-    Scalar::Quantized: PrimInt
-{
-    type Quantized = Point3<Scalar::Quantized>;
+impl Quantize for Point3<f32> {
+    type Quantized = Point3<u32>;
+
+    fn quantize(self) -> Option<Self::Quantized> {
+        const MIN_VALUE: f32 = std::u32::MIN as f32;
+        const MAX_VALUE: f32 = (std::u32::MAX - 1u32) as f32;
+        const RANGE: f32 = MAX_VALUE - MIN_VALUE;
+        Point3::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
+    }
 }
 
-impl<Point> QuantizeResult for Bounds<Point>
-where 
-    Point: QuantizeResult,
+impl<Point> Quantize for Bounds<Point>
+where
+    Point: Quantize,
+    Point::Quantized: ElementWise<u32>
 {
     type Quantized = Bounds<Point::Quantized>;
-}
 
-impl<Point, Scalar> Quantize for Bounds<Point>
-where
-    Point: EuclideanSpace<Scalar = Scalar> + ElementWise<Scalar> + QuantizeResult + Cast<<Point as QuantizeResult>::Quantized>,
-    <Point as QuantizeResult>::Quantized: ElementWise<Scalar::Quantized>,
-    Scalar: BaseFloat + QuantizeResult,
-    Scalar::Quantized: PrimInt + NumCast
-{
     fn quantize(self) -> Option<Self::Quantized> {
-        let min_value = Scalar::from(Scalar::Quantized::min_value())?;
-        let max_value = Scalar::from(Scalar::Quantized::max_value() - Scalar::Quantized::one())?;
-        let range = max_value - min_value;
         Some(Bounds{
-            min: (self.min * range).add_element_wise(min_value).cast()?,
-            max: (self.max * range).add_element_wise(min_value).cast()?.add_element_wise(Scalar::Quantized::one())
+            min: self.min.quantize()?,
+            max: self.max.quantize()?.add_element_wise(1u32)
         })
     }
 }
 
-impl<Scalar, Index> LevelIndexBounds<Index> for Bounds<Point3<Scalar>>
+impl<Index> LevelIndexBounds<Index> for Bounds<Point3<u32>>
 where
-    Scalar: Debug + NumAssignOps + PrimInt + Unsigned + Shl<u32, Output = Scalar>,
-    Index: SpatialIndex<Scalar = Scalar, Diff = Vector3<Scalar>, Point = Point3<Scalar>>
+    Index: SpatialIndex<Diff = Vector3<u32>, Point = Point3<u32>>
 {
     type Output = SmallVec<[Index; 8]>;
 
     fn indices(self, min_depth: Option<u32>) -> Self::Output {
         let max_axis = self.size().max_axis();
-        let mut depth = (max_axis - Index::Scalar::one()).leading_zeros();
+        let mut depth = (max_axis - 1u32).leading_zeros();
         if let Some(min_depth_) = min_depth {
             if depth < min_depth_ {
                 depth = min_depth_;
@@ -220,12 +186,7 @@ where
 
     fn indices_at_depth(self, depth: u32) -> Self::Output {
         if depth == 0 {
-            return smallvec![Index::default()
-                .set_depth(0)
-                .set_origin(Index::Point::new(
-                    Scalar::zero(),
-                    Scalar::zero(),
-                    Scalar::zero()))];
+            return smallvec![Index::default()];
         }
 
         let min = self.min.map(|scalar| truncate_to_depth(scalar, depth));
@@ -233,7 +194,7 @@ where
 
         let mut indices: Self::Output = Self::Output::new();
 
-        let step = scale_at_depth::<Scalar>(depth);
+        let step = scale_at_depth(depth);
         let mut z = min.z;
         loop {
             let mut y = min.y;
@@ -286,20 +247,16 @@ pub trait TestGeometry: Sized + Debug {
 /// A type implementing [`TestGeometry`] for rays
 pub struct RayTestGeometry<Point>
 where
-    Point: EuclideanSpace,
-    Point::Scalar: BaseFloat + Display
+    Point: EuclideanSpace<Scalar = f32>
 {
     cell_bounds: Bounds<Point>,
     origin: Point,
     direction: Point::Diff,
-    range_min: Point::Scalar,
-    range_max: Point::Scalar
+    range_min: f32,
+    range_max: f32
 }
 
-impl<Scalar> Debug for RayTestGeometry<Point3<Scalar>>
-where
-    Scalar: BaseFloat + Display
-{
+impl Debug for RayTestGeometry<Point3<f32>> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "RayTestGeometry{{{{({:}, {:}, {:}) - ({:}, {:}, {:})}}, ({:}, {:}, {:}), ({:}, {:}, {:}), {{{:}-{:}}}}}",
             self.cell_bounds.min.x,
@@ -320,9 +277,8 @@ where
 }
 
 impl<Point> RayTestGeometry<Point>
-    where
-        Point: EuclideanSpace,
-        Point::Scalar: BaseFloat + Display
+where
+    Point: EuclideanSpace<Scalar = f32>
 {
     /// Construct ray test geometry
     /// 
@@ -332,16 +288,16 @@ impl<Point> RayTestGeometry<Point>
         system_bounds: Bounds<Point>,
         origin: Point,
         direction: Point::Diff,
-        mut range_min: Point::Scalar,
-        mut range_max: Point::Scalar) -> Self
+        mut range_min: f32,
+        mut range_max: f32) -> Self
     where
         Point: Debug,
-        Point::Diff: ElementWise + std::ops::Index<usize, Output = Point::Scalar> + Debug,
+        Point::Diff: ElementWise + std::ops::Index<usize, Output = f32> + Debug,
     {
         let distance_0 = (system_bounds.min - origin).div_element_wise(direction);
         let distance_1 = (system_bounds.max - origin).div_element_wise(direction);
         for axis in 0..3 {
-            let is_forward = direction[axis] > Point::Scalar::zero();
+            let is_forward = direction[axis] > 0f32;
             let (d0, d1) = if is_forward {
                     (distance_0[axis], distance_1[axis])
                 } else {
@@ -360,10 +316,7 @@ impl<Point> RayTestGeometry<Point>
     }
 }
 
-impl<Scalar> TestGeometry for RayTestGeometry<Point3<Scalar>>
-where
-    Scalar: BaseFloat + Display
-{
+impl TestGeometry for RayTestGeometry<Point3<f32>> {
     type SubdivideResult = [Option<Self>; 8];
 
     fn subdivide(&self) -> Self::SubdivideResult {
@@ -376,15 +329,15 @@ where
             for axis in 0..3 {
                 let side = cell & (1 << axis) != 0;
                 if distance[axis].is_finite() {
-                    let is_towards = (self.direction[axis] > Scalar::zero()) != side;
+                    let is_towards = (self.direction[axis] > 0f32) != side;
                     if is_towards {
                         range_max = range_max.min(distance[axis]);
                     } else {
                         range_min = range_min.max(distance[axis]);
                     }
                 } else if (self.origin[axis] > center[axis]) != side {
-                    range_min = Scalar::infinity();
-                    range_max = Scalar::neg_infinity();
+                    range_min = std::f32::INFINITY;
+                    range_max = std::f32::NEG_INFINITY;
                 }
             }
             if range_max > range_min {

@@ -1,10 +1,8 @@
-// mlodato, 20190221
+// mlodato, 20190317
 
 use cgmath::{Point3, Vector3};
 use cgmath::prelude::*;
-use num_traits::{NumAssignOps, PrimInt, Unsigned};
 use std::fmt::{Debug, Formatter};
-use std::ops::Shl;
 
 /// An index representing an object's position and scale
 /// 
@@ -28,9 +26,8 @@ use std::ops::Shl;
 /// bounds (i.e. zero origin and zero depth)
 
 pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
-    type Scalar: Debug + NumAssignOps + PrimInt + Unsigned + Shl<u32, Output = Self::Scalar>;
-    type Diff: cgmath::VectorSpace<Scalar = Self::Scalar>;
-    type Point: Copy + EuclideanSpace<Diff = Self::Diff, Scalar = Self::Scalar>;
+    type Diff: cgmath::VectorSpace<Scalar = u32>;
+    type Point: Copy + EuclideanSpace<Diff = Self::Diff, Scalar = u32>;
 
     /// clamps a depth value to the representable range
     fn clamp_depth(u32) -> u32;
@@ -123,7 +120,6 @@ impl Debug for Index64_3D {
 }
 
 impl SpatialIndex for Index64_3D {
-    type Scalar = u32;
     type Diff = Vector3<u32>;
     type Point = Point3<u32>;
 
