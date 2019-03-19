@@ -1,9 +1,11 @@
-use super::geom::{Bounds, LevelIndexBounds};
+// mlodato, 20190318
+
+use super::geom::{Bounds, LevelIndexBounds, RayTestGeometry, TestGeometry};
 use super::index::SpatialIndex;
-use super::traits::{Containment, ObjectID, Quantize, QuantizeResult};
+use super::traits::{Containment, ObjectID, Quantize};
 
 use cgmath::prelude::*;
-use num_traits::NumAssignOps;
+use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 use std::fmt::Debug;
@@ -36,6 +38,8 @@ where
     min_depth: u32,
     tree: (Vec<(Index, ID)>, bool),
     collisions: Vec<(ID, ID)>,
+    test_results: Vec<ID>,
+    processed: FxHashSet<ID>,
     invalid: Vec<ID>,
 
     #[cfg(feature="parallel")]
@@ -55,27 +59,23 @@ where
         self.tree.0.iter()
     }
 
-    /// Clear all internal state
+    /// Clear all index-ID pairs
     pub fn clear(&mut self) {
         let (tree, sorted) = &mut self.tree;
         tree.clear();
         *sorted = true;
-        self.collisions.clear();
-        self.invalid.clear();
     }
 
     /// Append multiple objects to the `Layer`
     /// 
     /// Complex geometry may provide multiple bounds for a single object ID; this usage would be common
     /// for static geometry, as it prevents extraneous self-collisions
-    pub fn extend<Iter, Point_, Scalar_>(&mut self, system_bounds: Bounds<Point_>, objects: Iter)
+    pub fn extend<Iter, Point_>(&mut self, system_bounds: Bounds<Point_>, objects: Iter)
     where
         Iter: std::iter::Iterator<Item = (Bounds<Point_>, ID)>,
-        Point_: EuclideanSpace<Scalar = Scalar_>,
-        Point_::Scalar: cgmath::BaseFloat,
+        Point_: EuclideanSpace<Scalar = f32>,
         Point_::Diff: ElementWise,
-        Scalar_: Debug + NumAssignOps,
-        Bounds<Point_>: Containment + Quantize + QuantizeResult<Quantized = Bounds<Index::Point>>
+        Bounds<Point_>: Containment + Quantize<Quantized = Bounds<Index::Point>>
     {
         let (tree, sorted) = &mut self.tree;
 
@@ -146,6 +146,254 @@ where
         }
     }
 
+    fn test_impl<TestGeom, Callback>(
+        tree: &[(Index, ID)],
+        cell: Index,
+        test_geom: &TestGeom,
+        mut nearest: f32,
+        max_depth: Option<u32>,
+        callback: &mut Callback) -> f32
+    where
+        TestGeom: TestGeometry,
+        Callback: FnMut(&TestGeom, f32, ID) -> f32
+    {
+        use std::cmp::Ordering::{Less, Greater};
+
+        if tree.is_empty() || !test_geom.should_test(nearest) {
+            return nearest;
+        }
+
+        if tree.first().unwrap().0 < cell || !cell.overlaps(tree.last().unwrap().0) {
+            panic!("test_impl called with non-overlapping indices");
+        }
+
+        let depth = cell.depth();
+        if let Some(max_depth) = max_depth {
+            if depth >= max_depth {
+                return tree.iter()
+                    .map(|(_, id)| *id)
+                    .fold(nearest, |nearest, id|
+                        callback(test_geom, nearest, id).min(nearest));
+            }
+        }
+
+        if let Some(sub_cells) = cell.subdivide() {
+            let mut sub_trees = sub_cells.as_ref().iter()
+                .map(|cell| Some(*cell))
+                .chain((0..1).map(|_| None))
+                .scan(tree, |tree, cell| {
+                    if let Some(cell) = cell {
+                        let i = tree.binary_search_by(|&(index, _)| {
+                            if index < cell { Less } else { Greater }
+                        }).err().unwrap();
+                        let (head, tail) = tree.split_at(i);
+                        *tree = tail;
+                        Some(head)
+                    } else {
+                        Some(tree)
+                    }
+                });
+            nearest = sub_trees.next().unwrap().iter()
+                .map(|(_, id)| *id)
+                .fold(nearest, |nearest, id|
+                    callback(test_geom, nearest, id).min(nearest));
+
+            let sub_trees: SmallVec<[_; 8]> = sub_trees.collect();
+            let sub_tests = test_geom.subdivide();
+
+            for &i in test_geom.test_order().as_ref() {
+                nearest = Self::test_impl(
+                    sub_trees[i],
+                    sub_cells.as_ref()[i],
+                    &sub_tests.as_ref()[i],
+                    nearest,
+                    max_depth,
+                    callback);
+            }
+
+            nearest
+        } else {
+            return tree.iter()
+                .map(|(_, id)| *id)
+                .fold(nearest, |nearest, id|
+                    callback(test_geom, nearest, id).min(nearest));
+        }
+    }
+
+    /// Run a single test on some geometry
+    /// 
+    /// This occurs by repeatedly subdividing both this `Layer`'s index-ID list and the provided
+    /// `test_geom`, returning any items at a given depth where both the resulting index list
+    /// is non-empty and [`TestGeometry::subdivide`] returns a result
+    /// 
+    /// _note: this method may do an implicit, non-parallel sort; you may call [`par_sort`] prior
+    /// to calling this method to perform a parallel sort instead_
+    /// 
+    /// [`TestGeometry::subdivide`]: trait.TestGeometry.html#tymethod.subdivide
+    /// [`par_sort`]: #method.par_sort
+    pub fn test<'a, TestGeom>(
+        &'a mut self,
+        test_geom: &TestGeom,
+        max_depth: Option<u32>) -> &'a Vec<ID>
+    where
+        TestGeom: TestGeometry
+    {
+        self.sort();
+
+        self.test_results.clear();
+
+        let (tree, _) = &self.tree;
+        let results = &mut self.test_results;
+        Self::test_impl(
+            tree,
+            Index::default(),
+            test_geom,
+            std::f32::INFINITY,
+            max_depth,
+            &mut |_, nearest, id| {
+                results.push(id);
+                nearest
+            });
+
+        results.sort();
+        results.dedup();
+
+        results
+    }
+
+    /// A special case of [`test`] for ray-testing, see [`RayTestGeometry`]
+    /// 
+    /// The `system_bounds` provided to this method should, in most cases, be identical to the
+    /// `system_bounds` provided to [`extend`]
+    /// 
+    /// _note: this method may do an implicit, non-parallel sort; you may call [`par_sort`] prior
+    /// to calling this method to perform a parallel sort instead_
+    /// 
+    /// [`test`]: #method.test
+    /// [`extend`]: #method.extend
+    /// [`par_sort`]: #method.par_sort
+    /// [`RayTestGeometry`]: struct.RayTestGeometry.html
+    pub fn test_ray<'a, Point_>(
+        &'a mut self,
+        system_bounds: Bounds<Point_>,
+        origin   : Point_,
+        direction: Point_::Diff,
+        range_min: f32,
+        range_max: f32,
+        max_depth: Option<u32>) -> &'a Vec<ID>
+    where
+        Point_: EuclideanSpace<Scalar = f32> + Debug,
+        Point_::Diff: ElementWise + std::ops::Index<usize, Output = f32> + Debug,
+        RayTestGeometry<Point_>: TestGeometry
+    {
+        let test_geom = RayTestGeometry::with_system_bounds(
+            system_bounds,
+            origin,
+            direction,
+            range_min,
+            range_max);
+
+        self.test(
+            &test_geom,
+            max_depth);
+
+        &self.test_results
+    }
+
+    /// Run a picking or hit-test operation
+    /// 
+    /// This is implemented similarly to [`test`], but differs in that it returns only the nearest
+    /// result and may stop searching as soon as the nearest result is found
+    /// 
+    /// _note: this method may do an implicit, non-parallel sort; you may call [`par_sort`] prior
+    /// to calling this method to perform a parallel sort instead_
+    /// 
+    /// [`test`]: #method.test
+    /// [`par_sort`]: #method.par_sort
+    pub fn pick<TestGeom, GetDist>(
+        &mut self,
+        test_geom: &TestGeom,
+        max_dist: f32,
+        max_depth: Option<u32>,
+        mut get_dist: GetDist) -> Option<(f32, ID)>
+    where
+        TestGeom: TestGeometry,
+        GetDist: FnMut(&TestGeom, f32, ID) -> f32
+    {
+        self.sort();
+
+        self.processed.clear();
+
+        let (tree, _) = &self.tree;
+        let processed = &mut self.processed;
+        let mut result: Option<ID> = None;
+        let dist = Self::test_impl(
+            tree,
+            Index::default(),
+            test_geom,
+            max_dist,
+            max_depth,
+            &mut |test_geom, nearest, id| {
+                if processed.insert(id) {
+                    let dist = get_dist(test_geom, nearest, id);
+                    if dist.is_finite() {
+                        if dist < nearest {
+                            result = Some(id);
+                        }
+                        dist
+                    } else {
+                        std::f32::INFINITY
+                    }
+                } else {
+                    std::f32::INFINITY
+                }
+            });
+
+        result.map(|id| (dist, id))
+    }
+
+    /// A special case of [`pick`] for ray-testing, see [`RayTestGeometry`]
+    /// 
+    /// The `system_bounds` provided to this method should, in most cases, be identical to the
+    /// `system_bounds` provided to [`extend`]
+    /// 
+    /// _note: this method may do an implicit, non-parallel sort; you may call [`par_sort`] prior
+    /// to calling this method to perform a parallel sort instead_
+    /// 
+    /// [`pick`]: #method.pick
+    /// [`extend`]: #method.extend
+    /// [`par_sort`]: #method.par_sort
+    /// [`RayTestGeometry`]: struct.RayTestGeometry.html
+    pub fn pick_ray<Point_, GetDist>(
+        &mut self,
+        system_bounds: Bounds<Point_>,
+        origin   : Point_,
+        direction: Point_::Diff,
+        max_dist: f32,
+        max_depth: Option<u32>,
+        mut get_dist: GetDist) -> Option<(f32, ID, Point_)>
+    where
+        Point_: EuclideanSpace<Scalar = f32> + Debug,
+        Point_::Diff: VectorSpace<Scalar = f32> + ElementWise + std::ops::Index<usize, Output = f32> + Debug,
+        RayTestGeometry<Point_>: TestGeometry,
+        GetDist: FnMut(&Point_, &Point_::Diff, f32, ID) -> f32
+    {
+        let test_geom = RayTestGeometry::with_system_bounds(
+            system_bounds,
+            origin,
+            direction,
+            0f32,
+            max_dist);
+
+        self.pick(&test_geom, max_dist, max_depth, |_, max_dist, id| {
+                get_dist(&origin, &direction, max_dist, id)
+            })
+            .map(|(dist, id)| {
+                let point = origin + direction * dist;
+                (dist, id, point)
+            })
+    }
+
     /// Detects collisions between all objects in the `Layer`
     pub fn scan<'a>(&'a mut self)
         -> &'a Vec<(ID, ID)>
@@ -164,6 +412,9 @@ where
         F: FnMut(ID, ID) -> bool
     {
         self.sort();
+        
+        self.collisions.clear();
+        self.invalid.clear();
 
         let (tree, _) = &self.tree;
         Self::scan_impl(tree.as_slice(), &mut self.collisions, filter);
@@ -196,6 +447,8 @@ where
     {
         self.par_sort();
 
+        self.collisions.clear();
+        self.invalid.clear();
         for set in self.collisions_tls.iter_mut() {
             set.borrow_mut().clear();
         }
@@ -274,7 +527,8 @@ where
 pub struct LayerBuilder {
     min_depth: u32,
     index_capacity: Option<usize>,
-    collision_capacity: Option<usize>
+    collision_capacity: Option<usize>,
+    test_capacity: Option<usize>
 }
 
 impl LayerBuilder {
@@ -297,6 +551,11 @@ impl LayerBuilder {
         self
     }
 
+    pub fn with_test_capacity(&mut self, capacity: usize) -> &mut Self {
+        self.test_capacity = Some(capacity);
+        self
+    }
+
     pub fn build<Index, ID>(&self) -> Layer<Index, ID>
     where
         Index: SpatialIndex,
@@ -313,6 +572,11 @@ impl LayerBuilder {
                     Some(capacity) => Vec::with_capacity(capacity),
                     None => Vec::new()
                 },
+            test_results: match self.test_capacity {
+                    Some(capacity) => Vec::with_capacity(capacity),
+                    None => Vec::new()
+                },
+            processed: FxHashSet::default(),
             invalid: Vec::new(),
             #[cfg(feature="parallel")]
             collisions_tls: CachedThreadLocal::new()

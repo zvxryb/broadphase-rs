@@ -1,4 +1,4 @@
-// mlodato, 20190221
+// mlodato, 20190318
 
 //! # Overview
 //! 
@@ -35,7 +35,7 @@
 //! # {
 //! let mut layer: Layer<Index64_3D, ID> = LayerBuilder::new().build();
 //! 
-//! // clears all internal state:
+//! // clears existing object index-ID pairs:
 //! layer.clear();
 //! 
 //! // appends an iterator of object bounds-ID pairs to the layer:
@@ -48,6 +48,7 @@
 
 extern crate cgmath;
 extern crate num_traits;
+extern crate rustc_hash;
 
 #[cfg(feature="parallel")]
 extern crate rayon;
@@ -72,6 +73,6 @@ mod geom;
 mod index;
 mod layer;
 
-pub use geom::Bounds;
+pub use geom::{Bounds, TestGeometry, RayTestGeometry};
 pub use index::{SpatialIndex, Index64_3D};
 pub use layer::{Layer, LayerBuilder};

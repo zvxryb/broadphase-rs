@@ -17,6 +17,7 @@ cgmath = "^0.17.0"
 log = "^0.4.6"
 num-traits = "^0.2.6"
 rayon = {version="^1.0.3", optional=true}
+rustc-hash = "^1.0.1"
 smallvec = "^0.6.8"
 thread_local = {version="^0.3.6", optional=true}
 
