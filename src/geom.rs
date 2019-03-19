@@ -253,7 +253,10 @@ pub trait TestGeometry: Sized + Debug {
     /// This is used to optimize tests where only the single, nearest, result should be returned
     fn test_order(&self) -> Self::TestOrder;
 
-    fn should_test(&self, nearest: Option<f32>) -> bool;
+    /// Return whether this geometry is valid and non-empty
+    /// 
+    /// `nearest` may be `std::f32::INFINITY`
+    fn should_test(&self, nearest: f32) -> bool;
 }
 
 /// [`TestGeometry`]: trait.TestGeometry.html
@@ -402,9 +405,8 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
         order
     }
 
-    fn should_test(&self, nearest: Option<f32>) -> bool {
-        return self.range_min <= self.range_max &&
-            nearest.map_or(true, |nearest| self.range_min <= nearest);
+    fn should_test(&self, nearest: f32) -> bool {
+        return self.range_min < self.range_max && self.range_min < nearest;
     }
 }
 

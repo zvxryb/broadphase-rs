@@ -144,16 +144,22 @@ where
         }
     }
 
-    fn test_impl<TestGeom: TestGeometry>(
-        results: &mut Vec<ID>,
+    fn test_impl<TestGeom, Callback>(
         tree: &[(Index, ID)],
         cell: Index,
         test_geometry: &TestGeom,
-        max_depth: Option<u32>)
+        mut nearest: f32,
+        max_depth: Option<u32>,
+        callback: &mut Callback) -> f32
+    where
+        TestGeom: TestGeometry,
+        Callback: FnMut(&TestGeom, f32, ID) -> f32
     {
         use std::cmp::Ordering::{Less, Greater};
 
-        if tree.is_empty() || !test_geometry.should_test(None) { return; }
+        if tree.is_empty() || !test_geometry.should_test(nearest) {
+            return nearest;
+        }
 
         if tree.first().unwrap().0 < cell || !cell.overlaps(tree.last().unwrap().0) {
             panic!("test_impl called with non-overlapping indices");
@@ -162,8 +168,9 @@ where
         let depth = cell.depth();
         if let Some(max_depth) = max_depth {
             if depth >= max_depth {
-                results.extend(tree.iter().map(|(_, id)| id));
-                return;
+                return tree.iter()
+                    .map(|(_, id)| *id)
+                    .fold(nearest, |nearest, id| callback(test_geometry, nearest, id));
             }
         }
 
@@ -183,16 +190,28 @@ where
                         Some(tree)
                     }
                 });
-            results.extend(sub_trees.next().unwrap().iter().map(|(_, id)| id));
+            nearest = sub_trees.next().unwrap().iter()
+                .map(|(_, id)| *id)
+                .fold(nearest, |nearest, id| callback(test_geometry, nearest, id));
 
             let sub_trees: SmallVec<[_; 8]> = sub_trees.collect();
             let sub_tests = test_geometry.subdivide();
 
             for &i in test_geometry.test_order().as_ref() {
-                Self::test_impl(results, sub_trees[i], sub_cells.as_ref()[i], &sub_tests.as_ref()[i], max_depth);
+                nearest = Self::test_impl(
+                    sub_trees[i],
+                    sub_cells.as_ref()[i],
+                    &sub_tests.as_ref()[i],
+                    nearest,
+                    max_depth,
+                    callback);
             }
+
+            nearest
         } else {
-            results.extend(tree.iter().map(|(_, id)| id));
+            return tree.iter()
+                .map(|(_, id)| *id)
+                .fold(nearest, |nearest, id| callback(test_geometry, nearest, id));
         }
     }
 
@@ -218,14 +237,22 @@ where
         self.test_results.clear();
 
         let (tree, _) = &self.tree;
+        let results = &mut self.test_results;
         Self::test_impl(
-            &mut self.test_results,
             tree,
             Index::default(),
             test_geometry,
-            max_depth);
+            std::f32::INFINITY,
+            max_depth,
+            &mut |_, nearest, id| {
+                results.push(id);
+                nearest
+            });
 
-        &self.test_results
+        results.sort();
+        results.dedup();
+
+        results
     }
 
     /// [`Layer::test`]: struct.Layer.html#method.test
