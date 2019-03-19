@@ -1,4 +1,4 @@
-// mlodato, 20190221
+// mlodato, 20190318
 
 //! # Overview
 //! 
@@ -48,6 +48,7 @@
 
 extern crate cgmath;
 extern crate num_traits;
+extern crate rustc_hash;
 
 #[cfg(feature="parallel")]
 extern crate rayon;

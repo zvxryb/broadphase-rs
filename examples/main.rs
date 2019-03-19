@@ -1,4 +1,4 @@
-// mlodato, 20190219
+// mlodato, 20190318
 
 extern crate broadphase;
 extern crate cgmath;
@@ -296,17 +296,41 @@ impl<'a> specs::System<'a> for Collisions {
 
             self.system.par_sort();
 
-            self.system.test_ray(
-                collision_config.bounds,
-                Point3 ::new(0f32, 300f32, 0f32),
-                Vector3::new(1f32, 0f32, 0f32),
-                0f32, std::f32::INFINITY, None)
-                .iter()
-                .for_each(|&id| {
+            {
+                if let Some((_dist, id, _point)) = self.system.pick_ray(
+                    collision_config.bounds,
+                    Point3::new(0f32, 360f32, 0f32),
+                    Vector3::new(1f32, 0f32, 0f32),
+                    std::f32::INFINITY, None,
+                    |ray_origin, ray_direction, _dist, id| {
+                        let ent = entities.entity(id);
+                        let Color(color) = colors.get_mut(ent).unwrap();
+                        *color = ggez::graphics::Color::new(0.5f32, 1f32, 0f32, 1f32);
+                        
+                        let position = positions.get(ent).unwrap();
+                        let Radius(r) = radii.get(ent).unwrap();
+                        let center = Point3::new(position.1.x, position.1.y, 0f32);
+                        let ball_dir = center - ray_origin;
+                        let ball_proj = ray_direction.dot(ball_dir);
+                        let ball_extent = (ball_proj.powi(2) - ball_dir.magnitude2() + r.powi(2)).sqrt();
+
+                        let range_min = ball_proj - ball_extent;
+                        let range_max = ball_proj + ball_extent;
+
+                        if range_max < 0f32 {
+                            std::f32::INFINITY
+                        } else if range_min < 0f32 {
+                            0f32
+                        } else {
+                            range_min
+                        }
+                    })
+                {
                     let ent = entities.entity(id);
                     let Color(color) = colors.get_mut(ent).unwrap();
-                    *color = ggez::graphics::Color::new(0.5f32, 1f32, 0f32, 1f32);
-                });
+                    *color = ggez::graphics::Color::new(1f32, 0f32, 0f32, 1f32);
+                }
+            }
 
             self.collisions.clear();
             self.collisions.extend(self.system.par_scan()
