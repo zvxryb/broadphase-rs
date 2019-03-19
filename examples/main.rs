@@ -18,14 +18,12 @@ use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering as AtomicOrderi
 use std::time::{Duration, Instant};
 
 struct AllocLogger {
-    count  : AtomicUsize,
-    time_ns: AtomicUsize
+    count: AtomicUsize
 }
 
 impl AllocLogger {
-    fn clear_and_get_stats(&self) -> (usize, usize) {
-        (self.count  .swap(0, AtomicOrdering::Relaxed),
-         self.time_ns.swap(0, AtomicOrdering::Relaxed))
+    fn clear_and_get_stats(&self) -> usize {
+        self.count.swap(0, AtomicOrdering::Relaxed)
     }
 }
 
@@ -33,23 +31,18 @@ unsafe impl GlobalAlloc for AllocLogger {
     #[inline(never)]
     unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
         self.count.fetch_add(1, AtomicOrdering::Relaxed);
-        let start = Instant::now();
         let result = SystemAlloc.alloc(layout);
-        self.time_ns.fetch_add(start.elapsed().subsec_nanos() as usize, AtomicOrdering::Relaxed);
         result
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: AllocLayout) {
-        let start = Instant::now();
         SystemAlloc.dealloc(ptr, layout);
-        self.time_ns.fetch_add(start.elapsed().subsec_nanos() as usize, AtomicOrdering::Relaxed);
     }
 }
 
 #[global_allocator]
 static ALLOCATOR: AllocLogger = AllocLogger{
-    count: ATOMIC_USIZE_INIT,
-    time_ns: ATOMIC_USIZE_INIT};
+    count: ATOMIC_USIZE_INIT};
 
 struct Time {
     current: Duration,
@@ -338,8 +331,8 @@ impl<'a> specs::System<'a> for Collisions {
                         Some((ent0, ent1, u, n * d))
                     }}));
 
-            let (alloc_count, alloc_time) = ALLOCATOR.clear_and_get_stats();
-            print!("allocs: ({:3}, {:8}ns)     ", alloc_count, alloc_time);
+            let alloc_count = ALLOCATOR.clear_and_get_stats();
+            print!("allocs: {:3}     ", alloc_count);
         } else {
             self.collisions.clear();
             for (ent0, pos0, &Radius(r0)) in (&entities, &positions, &radii).join() {
