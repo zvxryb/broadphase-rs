@@ -29,20 +29,33 @@ use thread_local::CachedThreadLocal;
 /// 
 /// `ID` is the type representing object IDs
 
+#[derive(Default)]
+#[cfg_attr(any(test, feature="serde"), derive(Deserialize, Serialize))]
 pub struct Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
     Bounds<Index::Point>: LevelIndexBounds<Index>
 {
+    // persistant state:
     min_depth: u32,
     tree: (Vec<(Index, ID)>, bool),
+
+    // temporary data used within a method:
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     collisions: Vec<(ID, ID)>,
+
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     test_results: Vec<ID>,
+
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     processed: FxHashSet<ID>,
+
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     invalid: Vec<ID>,
 
     #[cfg(feature="parallel")]
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     collisions_tls: CachedThreadLocal<RefCell<Vec<(ID, ID)>>>,
 }
 

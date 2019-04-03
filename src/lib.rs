@@ -50,6 +50,10 @@ extern crate cgmath;
 extern crate num_traits;
 extern crate rustc_hash;
 
+#[cfg(any(test, feature="serde"))]
+#[macro_use]
+extern crate serde;
+
 #[cfg(feature="parallel")]
 extern crate rayon;
 

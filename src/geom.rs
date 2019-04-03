@@ -5,6 +5,7 @@ use super::traits::{Containment, MaxAxis, Quantize};
 
 use cgmath::{Point2, Vector2, Point3, Vector3};
 use cgmath::prelude::*;
+use num_traits::{Float, One, PrimInt};
 use smallvec::SmallVec;
 
 use std::fmt::{Debug, Formatter};
@@ -61,8 +62,9 @@ where
 
 /// An axis-aligned bounding box
 /// 
-/// This is used in public interfaces, as a means to obtain information necessary to generate indices.
+/// Min and max values are _inclusive_
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(any(test, feature="serde"), derive(Deserialize, Serialize))]
 pub struct Bounds<Point> {
     pub min: Point,
     pub max: Point
@@ -76,8 +78,19 @@ where
         Self{min, max}
     }
 
-    pub fn size(self) -> Point::Diff {
+    pub fn sizef(self) -> Point::Diff
+    where
+        Point::Scalar: Float
+    {
         self.max - self.min
+    }
+
+    pub fn sizei(self) -> Point::Diff
+    where
+        Point::Scalar: PrimInt + One,
+        Point::Diff: ElementWise<Point::Scalar>
+    {
+        (self.max - self.min).add_element_wise(Point::Scalar::one())
     }
 
     pub fn center(self) -> Point {
@@ -86,13 +99,15 @@ where
 
     pub fn normalize_point(self, point: Point) -> Point
     where
+        Point::Scalar: Float,
         Point::Diff: ElementWise
     {
-        EuclideanSpace::from_vec((point - self.min).div_element_wise(self.size()))
+        EuclideanSpace::from_vec((point - self.min).div_element_wise(self.sizef()))
     }
 
     pub fn normalize_to_system(self, system_bounds: Bounds<Point>) -> Bounds<Point>
     where
+        Point::Scalar: Float,
         Point::Diff: ElementWise
     {
         Bounds{
@@ -109,8 +124,8 @@ where
     fn contains(self, other: Bounds<Point2<T>>) -> bool {
         self.min.x <= other.min.x &&
         self.min.y <= other.min.y &&
-        self.max.x >  other.max.x &&
-        self.max.y >  other.max.y
+        self.max.x >= other.max.x &&
+        self.max.y >= other.max.y
     }
 }
 
@@ -122,9 +137,9 @@ where
         self.min.x <= other.min.x &&
         self.min.y <= other.min.y &&
         self.min.z <= other.min.z &&
-        self.max.x >  other.max.x &&
-        self.max.y >  other.max.y &&
-        self.max.z >  other.max.z
+        self.max.x >= other.max.x &&
+        self.max.y >= other.max.y &&
+        self.max.z >= other.max.z
     }
 }
 
@@ -132,8 +147,9 @@ impl Quantize for Point2<f32> {
     type Quantized = Point2<u32>;
 
     fn quantize(self) -> Option<Self::Quantized> {
+        // MAX_VALUE has 24 bits set because IEEE floats have 23 explicit + 1 implicit fractional bits
         const MIN_VALUE: f32 = std::u32::MIN as f32;
-        const MAX_VALUE: f32 = (std::u32::MAX - 1u32) as f32;
+        const MAX_VALUE: f32 = 0xffffff00u32 as f32;
         const RANGE: f32 = MAX_VALUE - MIN_VALUE;
         Point2::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
     }
@@ -143,8 +159,9 @@ impl Quantize for Point3<f32> {
     type Quantized = Point3<u32>;
 
     fn quantize(self) -> Option<Self::Quantized> {
+        // MAX_VALUE has 24 bits set because IEEE floats have 23 explicit + 1 implicit fractional bits
         const MIN_VALUE: f32 = std::u32::MIN as f32;
-        const MAX_VALUE: f32 = (std::u32::MAX - 1u32) as f32;
+        const MAX_VALUE: f32 = 0xffffff00u32 as f32;
         const RANGE: f32 = MAX_VALUE - MIN_VALUE;
         Point3::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
     }
@@ -160,7 +177,7 @@ where
     fn quantize(self) -> Option<Self::Quantized> {
         Some(Bounds{
             min: self.min.quantize()?,
-            max: self.max.quantize()?.add_element_wise(1u32)
+            max: self.max.quantize()?
         })
     }
 }
@@ -172,11 +189,11 @@ where
     type Output = SmallVec<[Index; 8]>;
 
     fn indices(self, min_depth: Option<u32>) -> Self::Output {
-        let max_axis = self.size().max_axis();
+        let max_axis = self.sizei().max_axis();
         let mut depth = (max_axis - 1u32).leading_zeros();
-        if let Some(min_depth_) = min_depth {
-            if depth < min_depth_ {
-                depth = min_depth_;
+        if let Some(min_depth) = min_depth {
+            if depth < min_depth {
+                depth = min_depth;
             }
         }
         depth = Index::clamp_depth(depth);

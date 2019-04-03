@@ -1,0 +1,18 @@
+[package]
+name = "broadphase_utils"
+publish = false
+version = "0.1.0"
+authors = ["Michael Lodato <zvxryb@gmail.com>"]
+
+[dependencies]
+broadphase = {path="..", features=["serde"]}
+bincode = "^1.1.2"
+cgmath = {version="^0.17.0", features=["serde"]}
+clap = "^2.31.2"
+rand = "^0.6.4"
+rand_chacha = "^0.1.1"
+serde = {version="^1.0.89", features=["derive"]}
+
+[[bin]]
+name = "gen_test_data"
+path = "src/gen_test_data.rs"

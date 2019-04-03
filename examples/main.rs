@@ -388,8 +388,8 @@ impl<'a> specs::System<'a> for Collisions {
 
         let x_min = screen_coords.0.x;
         let y_min = screen_coords.0.y;
-        let x_max = screen_coords.0.w + x_min - 1f32;
-        let y_max = screen_coords.0.h + y_min - 1f32;
+        let x_max = screen_coords.0.w + x_min;
+        let y_max = screen_coords.0.h + y_min;
 
         for (mut pos, &Radius(r)) in (&mut positions, &radii).join() {
             if pos.1.x - r < x_min {
@@ -490,7 +490,7 @@ impl ggez::event::EventHandler for GameState {
 
         let collision_config = self.world.read_resource::<CollisionSystemConfig>();
         if collision_config.enabled {
-            let scale  = collision_config.bounds.size();
+            let scale  = collision_config.bounds.sizef();
             let offset = collision_config.bounds.min;
 
             let iter = &mut self.collisions.system.iter().peekable();
