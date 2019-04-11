@@ -9,11 +9,16 @@ extern crate rand_chacha;
 extern crate clap;
 
 #[macro_use]
+extern crate glium;
+
+#[macro_use]
 extern crate serde;
 
 use broadphase::Bounds;
-use cgmath::{Point3, Vector3};
+use cgmath::{Deg, Matrix4, Point3, Quaternion, Rad, Vector3};
+use glium::glutin;
 
+use cgmath::prelude::*;
 use rand::prelude::*;
 
 use std::fs::File;
@@ -104,7 +109,7 @@ impl Command for GenBoxes {
 
                 let max = min + size;
 
-                (Bounds{ min: min, max: max }, id as u32)
+                (Bounds{ min, max }, id as u32)
             }));
 
         let f = File::create(args.value_of("out_path")
@@ -112,7 +117,7 @@ impl Command for GenBoxes {
             .expect("failed to open output for writing");
 
         bincode::serialize_into(f, &Scene{
-            system_bounds: system_bounds,
+            system_bounds,
             object_bounds: bounds
         }).expect("failed to write output");
     }
@@ -131,6 +136,13 @@ impl Command for ShowBoxes {
                 .value_name("PATH")
                 .required(true)
                 .help("path to a scene generated with gen_boxes"))
+            .arg(Arg::with_name("cli")
+                .long("cli")
+                .help("dump output to terminal (default)"))
+            .arg(Arg::with_name("gui")
+                .long("gui")
+                .conflicts_with("cli")
+                .help("show 3D visualization"))
     }
     fn exec(args: &clap::ArgMatches) {
         let f = File::open(args.value_of("in_path")
@@ -140,17 +152,284 @@ impl Command for ShowBoxes {
         let scene: Scene = bincode::deserialize_from(f)
             .expect("failed to read input");
 
-        println!("system_bounds: {:?}", scene.system_bounds);
-        println!("object_bounds:");
-        for (bounds, id) in scene.object_bounds {
-            println!("\tid: {:5}, bounds: <{:6.3}, {:6.3}, {:6.3}> <{:6.3}, {:6.3}, {:6.3}>",
-                id,
-                bounds.min.x,
-                bounds.min.y,
-                bounds.min.z,
-                bounds.max.x,
-                bounds.max.y,
-                bounds.max.z);
+        if args.is_present("gui") {
+            let mut events_loop = glutin::EventsLoop::new();
+            let window_builder = glutin::WindowBuilder::new()
+                .with_title("Broadphase Util: Show Boxes")
+                .with_resizable(true);
+            let context = glutin::ContextBuilder::new()
+                .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (4, 5)))
+                .with_gl_profile(glutin::GlProfile::Core)
+                .with_multisampling(4);
+            let display = glium::Display::new(window_builder, context, &events_loop)
+                .expect("failed to create display");
+
+            let box_vbo = {
+                #[derive(Copy, Clone)]
+                struct Vertex {
+                    position: [f32; 3]
+                }
+
+                implement_vertex!(Vertex, position);
+
+                glium::VertexBuffer::immutable(&display, &[
+                    Vertex{ position: [0f32, 0f32, 0f32] }, Vertex{ position: [1f32, 0f32, 0f32] },
+                    Vertex{ position: [0f32, 0f32, 1f32] }, Vertex{ position: [1f32, 0f32, 1f32] },
+                    Vertex{ position: [0f32, 1f32, 0f32] }, Vertex{ position: [1f32, 1f32, 0f32] },
+                    Vertex{ position: [0f32, 1f32, 1f32] }, Vertex{ position: [1f32, 1f32, 1f32] },
+                    Vertex{ position: [0f32, 0f32, 0f32] }, Vertex{ position: [0f32, 1f32, 0f32] },
+                    Vertex{ position: [0f32, 0f32, 1f32] }, Vertex{ position: [0f32, 1f32, 1f32] },
+                    Vertex{ position: [1f32, 0f32, 0f32] }, Vertex{ position: [1f32, 1f32, 0f32] },
+                    Vertex{ position: [1f32, 0f32, 1f32] }, Vertex{ position: [1f32, 1f32, 1f32] },
+                    Vertex{ position: [0f32, 0f32, 0f32] }, Vertex{ position: [0f32, 0f32, 1f32] },
+                    Vertex{ position: [1f32, 0f32, 0f32] }, Vertex{ position: [1f32, 0f32, 1f32] },
+                    Vertex{ position: [0f32, 1f32, 0f32] }, Vertex{ position: [0f32, 1f32, 1f32] },
+                    Vertex{ position: [1f32, 1f32, 0f32] }, Vertex{ position: [1f32, 1f32, 1f32] }
+                ]).expect("failed to create vbo")
+            };
+
+            let box_instances_vbo = {
+                #[derive(Copy, Clone)]
+                struct Vertex {
+                    aabb_min: [f32; 3],
+                    aabb_max: [f32; 3],
+                    color: [f32; 3]
+                }
+
+                implement_vertex!(Vertex, aabb_min, aabb_max, color);
+
+                glium::VertexBuffer::immutable(&display,
+                    scene.object_bounds.iter()
+                        .map(|&(bounds, _)| {
+                            Vertex{
+                                aabb_min: [bounds.min.x, bounds.min.y, bounds.min.z],
+                                aabb_max: [bounds.max.x, bounds.max.y, bounds.max.z],
+                                color: [1f32; 3]}})
+                        .collect::<Vec<Vertex>>()
+                        .as_slice())
+                    .expect("failed to create vbo")
+            };
+
+            #[derive(Debug)]
+            struct Camera {
+                position: Point3<f32>,
+                orientation: Quaternion<f32>,
+                fov_y: Rad<f32>,
+                aspect_ratio: f32,
+                near: f32,
+                far: f32
+            }
+
+            let mut camera = {
+                let size = scene.system_bounds.sizef();
+                let near = 0.0001f32 * size.magnitude();
+                let far = near + size.magnitude();
+                Camera{
+                    position: scene.system_bounds.min,
+                    orientation: Quaternion::from_arc(-Vector3::unit_z(), size.normalize(), None),
+                    fov_y: Deg(90f32).into(),
+                    aspect_ratio: 1f32,
+                    near,
+                    far
+                }
+            };
+
+            #[derive(Copy, Clone)]
+            struct Transforms {
+                view:      [[f32; 4]; 4],
+                view_proj: [[f32; 4]; 4],
+                range: [f32; 4],
+            }
+
+            implement_uniform_block!(Transforms, view, view_proj, range);
+
+            let mut transforms = Transforms{ view: [[0f32; 4]; 4], view_proj: [[0f32; 4]; 4], range: [camera.near, camera.far, 0f32, 0f32] };
+            let transforms_ubo = glium::uniforms::UniformBuffer::<Transforms>::empty_persistent(&display).unwrap();
+
+            let program = glium::Program::from_source(&display,
+                r#"
+                    #version 450 core
+
+                    in vec3 position;
+                    in vec3 aabb_min;
+                    in vec3 aabb_max;
+                    in vec3 color;
+
+                    out vec3 v_color;
+
+                    uniform transforms {
+                        mat4 view;
+                        mat4 view_proj;
+                        vec4 range;
+                    };
+
+                    void main() {
+                        vec4 global = vec4(mix(aabb_min, aabb_max, position), 1.0);
+                        vec4 eye = view * global;
+                        float depth = (-eye.z / eye.w - range.x) / (range.y - range.x);
+                        float fog = 1.0 - log2(15.0 * clamp(depth, 0.0, 1.0) + 1.0) / 4.0;
+                        fog = fog * fog;
+                        v_color = color * fog;
+                        gl_Position = view_proj * global;
+                    }
+                "#,
+                r#"
+                    #version 450 core
+
+                    in vec3 v_color;
+
+                    out vec4 f_color;
+
+                    void main() {
+                        f_color = vec4(v_color, 1.0);
+                    }
+                "#,
+                None)
+                .expect("failed to compile shader");
+
+            let mut draw = |display: &glium::Display, camera: &Camera| {
+                let params = glium::DrawParameters{
+                    depth: glium::Depth{
+                        test: glium::DepthTest::IfLess,
+                        write: true,
+                        .. Default::default()
+                    },
+                    .. Default::default()
+                };
+
+                let rot: Matrix4<f32> = camera.orientation.invert().into();
+                let offs = Matrix4::from_translation(Point3::new(0f32, 0f32, 0f32) - camera.position);
+                let view = rot * offs;
+                let proj = cgmath::perspective(
+                    camera.fov_y,
+                    camera.aspect_ratio,
+                    camera.near,
+                    camera.far);
+
+                transforms.view = view.into();
+                transforms.view_proj = (proj * view).into();
+                transforms_ubo.write(&transforms);
+                let uniform = uniform!{ transforms: &transforms_ubo };
+
+                use glium::Surface;
+
+                let mut frame = display.draw();
+                frame.clear_color_and_depth((0f32, 0f32, 0f32, 0f32), 1f32);
+                frame.draw(
+                    (&box_vbo, box_instances_vbo.per_instance().unwrap()),
+                    glium::index::NoIndices(glium::index::PrimitiveType::LinesList),
+                    &program, &uniform, &params)
+                    .expect("failed to draw frame");
+                frame.finish().unwrap();
+            };
+
+            let mut running = true;
+            let mut time = std::time::Instant::now();
+            let mut mouse_grab: Option<glutin::MouseButton> = None;
+            let mut move_forward = false;
+            let mut move_back = false;
+            let mut move_left = false;
+            let mut move_right = false;
+            while running {
+                let mut redraw = false;
+                events_loop.poll_events(|event| {
+                    use glutin::{DeviceEvent, Event, WindowEvent};
+                    match event {
+                        Event::DeviceEvent{event, ..} => {
+                            match event {
+                                DeviceEvent::Key(glutin::KeyboardInput{state, virtual_keycode, ..}) => {
+                                    let move_dir = match virtual_keycode {
+                                        Some(glutin::VirtualKeyCode::W) => Some(&mut move_forward),
+                                        Some(glutin::VirtualKeyCode::A) => Some(&mut move_left),
+                                        Some(glutin::VirtualKeyCode::S) => Some(&mut move_back),
+                                        Some(glutin::VirtualKeyCode::D) => Some(&mut move_right),
+                                        _ => None
+                                    };
+
+                                    if let Some(move_dir) = move_dir {
+                                        *move_dir = state == glutin::ElementState::Pressed;
+                                    }
+                                }
+                                DeviceEvent::MouseMotion{delta: (dx, dy)} => {
+                                    if mouse_grab.is_some() {
+                                        const DEG_PER_PX: f32 = 0.2;
+                                        let rot_x = -(dy as f32) * DEG_PER_PX / 180f32;
+                                        let rot_y = -(dx as f32) * DEG_PER_PX / 180f32;
+                                        let rot_w = 1f32 - (rot_x.powi(2) + rot_y.powi(2)).sqrt();
+                                        camera.orientation = (camera.orientation * Quaternion::new(rot_w, rot_x, rot_y, 0f32)).normalize();
+                                        redraw = true;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        Event::WindowEvent{event, ..} => {
+                            match event {
+                                WindowEvent::CloseRequested => {
+                                    running = false
+                                }
+                                WindowEvent::MouseInput{state, button, ..} => {
+                                    if mouse_grab.map_or(true, |b| b == button) {
+                                        let is_pressed = match state {
+                                            glutin::ElementState::Pressed => true,
+                                            glutin::ElementState::Released => false
+                                        };
+                                        if mouse_grab.is_some() != is_pressed {
+                                            let window = display.gl_window();
+                                            window.grab_cursor(is_pressed).unwrap();
+                                            window.hide_cursor(is_pressed);
+                                        }
+                                        mouse_grab = if is_pressed { Some(button) } else { None };
+                                    }
+                                }
+                                WindowEvent::Resized(size) => {
+                                    camera.aspect_ratio = (size.width / size.height) as f32;
+                                    redraw = true;
+                                }
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+
+                if move_forward || move_back || move_left || move_right {
+                    const SPEED: f32 = 0.1f32;
+
+                    let mut move_local = Vector3::new(0f32, 0f32, 0f32);
+                    if move_forward { move_local += Vector3::new( 0f32, 0f32, -1f32); }
+                    if move_back    { move_local += Vector3::new( 0f32, 0f32,  1f32); }
+                    if move_left    { move_local += Vector3::new(-1f32, 0f32,  0f32); }
+                    if move_right   { move_local += Vector3::new( 1f32, 0f32,  0f32); }
+
+                    move_local *= (time.elapsed().subsec_nanos() as f32 / 1_000_000_000f32)
+                        * SPEED * scene.system_bounds.sizef().magnitude();
+
+                    let move_global = camera.orientation.rotate_vector(move_local);
+                    camera.position += move_global;
+
+                    redraw = true;
+                }
+
+                time = std::time::Instant::now();
+
+                if redraw {
+                    draw(&display, &camera);
+                }
+            }
+        } else {
+            println!("system_bounds: {:?}", scene.system_bounds);
+            println!("object_bounds:");
+            for &(bounds, id) in &scene.object_bounds {
+                println!("\tid: {:5}, bounds: <{:6.3}, {:6.3}, {:6.3}> <{:6.3}, {:6.3}, {:6.3}>",
+                    id,
+                    bounds.min.x,
+                    bounds.min.y,
+                    bounds.min.z,
+                    bounds.max.x,
+                    bounds.max.y,
+                    bounds.max.z);
+            }
         }
     }
 }
