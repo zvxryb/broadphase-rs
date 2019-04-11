@@ -393,6 +393,13 @@ impl Command for ShowBoxes {
                     }
                 });
 
+                const MAX_FPS: i32 = 200;
+                const MIN_DURATION_NS: i32 = 1_000_000_000 / MAX_FPS;
+                let remaining_duration_ns = MIN_DURATION_NS - (time.elapsed().subsec_nanos() as i32);
+                if remaining_duration_ns > 0 {
+                    std::thread::sleep(std::time::Duration::from_nanos(remaining_duration_ns as u64));
+                }
+
                 if move_forward || move_back || move_left || move_right {
                     const SPEED: f32 = 0.1f32;
 
