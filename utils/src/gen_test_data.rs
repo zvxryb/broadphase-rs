@@ -164,7 +164,7 @@ impl Command for ShowBoxes {
             let display = glium::Display::new(window_builder, context, &events_loop)
                 .expect("failed to create display");
 
-            let box_vbo = {
+            let box_outline_vbo = {
                 #[derive(Copy, Clone)]
                 struct Vertex {
                     position: [f32; 3]
@@ -185,6 +185,31 @@ impl Command for ShowBoxes {
                     Vertex{ position: [1f32, 0f32, 0f32] }, Vertex{ position: [1f32, 0f32, 1f32] },
                     Vertex{ position: [0f32, 1f32, 0f32] }, Vertex{ position: [0f32, 1f32, 1f32] },
                     Vertex{ position: [1f32, 1f32, 0f32] }, Vertex{ position: [1f32, 1f32, 1f32] }
+                ]).expect("failed to create vbo")
+            };
+
+            let box_solid_vbo = {
+                #[derive(Copy, Clone)]
+                struct Vertex {
+                    position: [f32; 3],
+                    normal  : [f32; 3]
+                }
+
+                implement_vertex!(Vertex, position, normal);
+
+                glium::VertexBuffer::immutable(&display, &[
+                    Vertex{ position: [0f32, 0f32, 0f32], normal: [ 0f32,  0f32, -1f32] }, Vertex{ position: [0f32, 1f32, 0f32], normal: [ 0f32,  0f32, -1f32] }, Vertex{ position: [1f32, 1f32, 0f32], normal: [ 0f32,  0f32, -1f32] },
+                    Vertex{ position: [0f32, 0f32, 0f32], normal: [ 0f32,  0f32, -1f32] }, Vertex{ position: [1f32, 1f32, 0f32], normal: [ 0f32,  0f32, -1f32] }, Vertex{ position: [1f32, 0f32, 0f32], normal: [ 0f32,  0f32, -1f32] },
+                    Vertex{ position: [0f32, 0f32, 1f32], normal: [ 0f32,  0f32,  1f32] }, Vertex{ position: [1f32, 1f32, 1f32], normal: [ 0f32,  0f32,  1f32] }, Vertex{ position: [0f32, 1f32, 1f32], normal: [ 0f32,  0f32,  1f32] },
+                    Vertex{ position: [0f32, 0f32, 1f32], normal: [ 0f32,  0f32,  1f32] }, Vertex{ position: [1f32, 0f32, 1f32], normal: [ 0f32,  0f32,  1f32] }, Vertex{ position: [1f32, 1f32, 1f32], normal: [ 0f32,  0f32,  1f32] },
+                    Vertex{ position: [0f32, 0f32, 0f32], normal: [ 0f32, -1f32,  0f32] }, Vertex{ position: [1f32, 0f32, 1f32], normal: [ 0f32, -1f32,  0f32] }, Vertex{ position: [0f32, 0f32, 1f32], normal: [ 0f32, -1f32,  0f32] },
+                    Vertex{ position: [0f32, 0f32, 0f32], normal: [ 0f32, -1f32,  0f32] }, Vertex{ position: [1f32, 0f32, 0f32], normal: [ 0f32, -1f32,  0f32] }, Vertex{ position: [1f32, 0f32, 1f32], normal: [ 0f32, -1f32,  0f32] },
+                    Vertex{ position: [0f32, 1f32, 0f32], normal: [ 0f32,  1f32,  0f32] }, Vertex{ position: [0f32, 1f32, 1f32], normal: [ 0f32,  1f32,  0f32] }, Vertex{ position: [1f32, 1f32, 1f32], normal: [ 0f32,  1f32,  0f32] },
+                    Vertex{ position: [0f32, 1f32, 0f32], normal: [ 0f32,  1f32,  0f32] }, Vertex{ position: [1f32, 1f32, 1f32], normal: [ 0f32,  1f32,  0f32] }, Vertex{ position: [1f32, 1f32, 0f32], normal: [ 0f32,  1f32,  0f32] },
+                    Vertex{ position: [0f32, 0f32, 0f32], normal: [-1f32,  0f32,  0f32] }, Vertex{ position: [0f32, 0f32, 1f32], normal: [-1f32,  0f32,  0f32] }, Vertex{ position: [0f32, 1f32, 1f32], normal: [-1f32,  0f32,  0f32] },
+                    Vertex{ position: [0f32, 0f32, 0f32], normal: [-1f32,  0f32,  0f32] }, Vertex{ position: [0f32, 1f32, 1f32], normal: [-1f32,  0f32,  0f32] }, Vertex{ position: [0f32, 1f32, 0f32], normal: [-1f32,  0f32,  0f32] },
+                    Vertex{ position: [1f32, 0f32, 0f32], normal: [ 1f32,  0f32,  0f32] }, Vertex{ position: [1f32, 1f32, 1f32], normal: [ 1f32,  0f32,  0f32] }, Vertex{ position: [1f32, 0f32, 1f32], normal: [ 1f32,  0f32,  0f32] },
+                    Vertex{ position: [1f32, 0f32, 0f32], normal: [ 1f32,  0f32,  0f32] }, Vertex{ position: [1f32, 1f32, 0f32], normal: [ 1f32,  0f32,  0f32] }, Vertex{ position: [1f32, 1f32, 1f32], normal: [ 1f32,  0f32,  0f32] }
                 ]).expect("failed to create vbo")
             };
 
@@ -225,8 +250,8 @@ impl Command for ShowBoxes {
                 let near = 0.0001f32 * size.magnitude();
                 let far = near + size.magnitude();
                 Camera{
-                    position: scene.system_bounds.min,
-                    orientation: Quaternion::from_arc(-Vector3::unit_z(), size.normalize(), None),
+                    position: scene.system_bounds.max,
+                    orientation: Quaternion::from_arc(-Vector3::unit_z(), -size.normalize(), None),
                     fov_y: Deg(90f32).into(),
                     aspect_ratio: 1f32,
                     near,
@@ -236,21 +261,20 @@ impl Command for ShowBoxes {
 
             #[derive(Copy, Clone)]
             struct Transforms {
-                view:      [[f32; 4]; 4],
-                view_proj: [[f32; 4]; 4],
-                range: [f32; 4],
+                view_proj: [[f32; 4]; 4]
             }
 
-            implement_uniform_block!(Transforms, view, view_proj, range);
+            implement_uniform_block!(Transforms, view_proj);
 
-            let mut transforms = Transforms{ view: [[0f32; 4]; 4], view_proj: [[0f32; 4]; 4], range: [camera.near, camera.far, 0f32, 0f32] };
+            let mut transforms = Transforms{ view_proj: [[0f32; 4]; 4] };
             let transforms_ubo = glium::uniforms::UniformBuffer::<Transforms>::empty_persistent(&display).unwrap();
 
-            let program = glium::Program::from_source(&display,
+            let program_solid = glium::Program::from_source(&display,
                 r#"
                     #version 450 core
 
                     in vec3 position;
+                    in vec3 normal;
                     in vec3 aabb_min;
                     in vec3 aabb_max;
                     in vec3 color;
@@ -258,18 +282,51 @@ impl Command for ShowBoxes {
                     out vec3 v_color;
 
                     uniform transforms {
-                        mat4 view;
                         mat4 view_proj;
-                        vec4 range;
                     };
+
+                    const vec3 light_dir = vec3(0.802, 0.535, 0.267);
 
                     void main() {
                         vec4 global = vec4(mix(aabb_min, aabb_max, position), 1.0);
-                        vec4 eye = view * global;
-                        float depth = (-eye.z / eye.w - range.x) / (range.y - range.x);
-                        float fog = 1.0 - log2(15.0 * clamp(depth, 0.0, 1.0) + 1.0) / 4.0;
-                        fog = fog * fog;
-                        v_color = color * fog;
+                        v_color = color * (0.4 * dot(light_dir, normal) + 0.6);
+                        gl_Position = view_proj * global;
+                    }
+                "#,
+                r#"
+                    #version 450 core
+
+                    in vec3 v_color;
+
+                    out vec4 f_color;
+
+                    void main() {
+                        f_color = vec4(v_color, 1.0);
+                    }
+                "#,
+                None)
+                .expect("failed to compile shader");
+
+            let program_outline = glium::Program::from_source(&display,
+                r#"
+                    #version 450 core
+
+                    in vec3 position;
+                    in vec3 normal;
+                    in vec3 aabb_min;
+                    in vec3 aabb_max;
+
+                    out vec3 v_color;
+
+                    uniform transforms {
+                        mat4 view_proj;
+                    };
+
+                    uniform vec3 color;
+
+                    void main() {
+                        vec4 global = vec4(mix(aabb_min, aabb_max, position), 1.0);
+                        v_color = vec3(0.0, 0.0, 0.0);
                         gl_Position = view_proj * global;
                     }
                 "#,
@@ -288,14 +345,6 @@ impl Command for ShowBoxes {
                 .expect("failed to compile shader");
 
             let mut draw = |display: &glium::Display, camera: &Camera| {
-                let params = glium::DrawParameters{
-                    depth: glium::Depth{
-                        test: glium::DepthTest::IfLess,
-                        write: true,
-                        .. Default::default()
-                    },
-                    .. Default::default()
-                };
 
                 let rot: Matrix4<f32> = camera.orientation.invert().into();
                 let offs = Matrix4::from_translation(Point3::new(0f32, 0f32, 0f32) - camera.position);
@@ -306,20 +355,52 @@ impl Command for ShowBoxes {
                     camera.near,
                     camera.far);
 
-                transforms.view = view.into();
                 transforms.view_proj = (proj * view).into();
                 transforms_ubo.write(&transforms);
-                let uniform = uniform!{ transforms: &transforms_ubo };
 
                 use glium::Surface;
 
                 let mut frame = display.draw();
-                frame.clear_color_and_depth((0f32, 0f32, 0f32, 0f32), 1f32);
-                frame.draw(
-                    (&box_vbo, box_instances_vbo.per_instance().unwrap()),
-                    glium::index::NoIndices(glium::index::PrimitiveType::LinesList),
-                    &program, &uniform, &params)
-                    .expect("failed to draw frame");
+                frame.clear_color_and_depth((0f32, 0.1f32, 0.2f32, 1f32), 1f32);
+
+                {
+                    let params = glium::DrawParameters{
+                        backface_culling: glium::BackfaceCullingMode::CullClockwise,
+                        depth: glium::Depth{
+                            test: glium::DepthTest::IfLess,
+                            write: true,
+                            .. Default::default()
+                        },
+                        .. Default::default()
+                    };
+                    let uniforms = uniform!{ transforms: &transforms_ubo };
+                    frame.draw(
+                        (&box_solid_vbo, box_instances_vbo.per_instance().unwrap()),
+                        glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
+                        &program_solid, &uniforms, &params)
+                        .expect("failed to draw frame");
+                }
+
+                {
+                    let params = glium::DrawParameters{
+                        depth: glium::Depth{
+                            test: glium::DepthTest::IfLessOrEqual,
+                            write: true,
+                            .. Default::default()
+                        },
+                        .. Default::default()
+                    };
+                    let uniforms = uniform!{
+                        transforms: &transforms_ubo,
+                        color: [1f32, 0f32, 0f32]
+                    };
+                    frame.draw(
+                        (&box_outline_vbo, box_instances_vbo.per_instance().unwrap()),
+                        glium::index::NoIndices(glium::index::PrimitiveType::LinesList),
+                        &program_outline, &uniforms, &params)
+                        .expect("failed to draw frame");
+                }
+
                 frame.finish().unwrap();
             };
 
