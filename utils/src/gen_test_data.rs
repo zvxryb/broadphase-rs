@@ -1,6 +1,6 @@
 extern crate broadphase;
+extern crate broadphase_data;
 
-extern crate bincode;
 extern crate cgmath;
 extern crate rand;
 extern crate rand_chacha;
@@ -11,25 +11,13 @@ extern crate clap;
 #[macro_use]
 extern crate glium;
 
-#[macro_use]
-extern crate serde;
-
 use broadphase::Bounds;
+use broadphase_data::{ID, Scene};
 use cgmath::{Deg, Matrix4, Point3, Quaternion, Rad, Vector3};
 use glium::glutin;
 
 use cgmath::prelude::*;
 use rand::prelude::*;
-
-use std::fs::File;
-
-type ID = u32;
-
-#[derive(Deserialize, Serialize)]
-struct Scene {
-    system_bounds: Bounds<Point3<f32>>,
-    object_bounds: Vec<(Bounds<Point3<f32>>, ID)>
-}
 
 trait Command {
     fn name() -> &'static str;
@@ -112,14 +100,13 @@ impl Command for GenBoxes {
                 (Bounds{ min, max }, id as u32)
             }));
 
-        let f = File::create(args.value_of("out_path")
-            .expect("no output path specified"))
-            .expect("failed to open output for writing");
-
-        bincode::serialize_into(f, &Scene{
+        let scene = Scene{
             system_bounds,
             object_bounds: bounds
-        }).expect("failed to write output");
+        };
+
+        scene.save(args.value_of("out_path").expect("no output path specified"))
+            .expect("failed to write output");
     }
 }
 
@@ -145,11 +132,7 @@ impl Command for ShowBoxes {
                 .help("show 3D visualization"))
     }
     fn exec(args: &clap::ArgMatches) {
-        let f = File::open(args.value_of("in_path")
-            .expect("no input path specified"))
-            .expect("failed to open input for reading");
-
-        let scene: Scene = bincode::deserialize_from(f)
+        let scene = Scene::load(args.value_of("in_path").expect("no input path specified"))
             .expect("failed to read input");
 
         if args.is_present("gui") {
