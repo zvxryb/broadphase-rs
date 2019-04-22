@@ -20,7 +20,7 @@ for count in (100, 300, 1_000, 3_000, 10_000, 30_000, 100_000):
     name = (f'boxes-seed_{SEED:d}'
         f'-d_{DENSITY[0]:d}_{DENSITY[1]:d}'
         f'-s_{SIZE_RANGE[0]:d}_{SIZE_RANGE[1]:d}'
-        f'-n_{count:d}.br_scene')
+        f'-n_{count:06d}.br_scene')
     path = INPUTS_ROOT / f'{name!s}'
     args = ('gen_boxes',
         '--seed', f'{SEED:d}',
