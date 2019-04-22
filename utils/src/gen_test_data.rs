@@ -40,7 +40,6 @@ impl Command for GenBoxes {
                 .short("n")
                 .long("count")
                 .value_name("NUMBER")
-                .required(true)
                 .help("number of objects in the scene"))
             .arg(Arg::with_name("size_range")
                 .short("s")
@@ -52,8 +51,12 @@ impl Command for GenBoxes {
                 .short("b")
                 .long("bounds")
                 .value_names(&["X0", "Y0", "Z0", "X1", "Y1", "Z1"])
-                .required(true)
                 .help("system bounds"))
+            .arg(Arg::with_name("density")
+                .short("d")
+                .long("density")
+                .value_name("DENSITY")
+                .help("number of boxes per unit^3"))
             .arg(Arg::with_name("out_path")
                 .short("o")
                 .long("out")
@@ -63,27 +66,78 @@ impl Command for GenBoxes {
     }
 
     fn exec(args: &clap::ArgMatches) {
-        let n = value_t!(args, "count", usize)
-            .expect("failed to get count");
         let size_range = values_t!(args, "size_range", f32)
             .expect("failed to get size_range");
-        let system_bounds = values_t!(args, "bounds", f32)
-            .expect("failed to get bounds");
 
-        let system_bounds = Bounds{
-            min: Point3::new(
-                system_bounds[0],
-                system_bounds[1],
-                system_bounds[2]),
-            max: Point3::new(
-                system_bounds[3],
-                system_bounds[4],
-                system_bounds[5])};
+        let count = args.value_of("count").map(|s|
+            s.parse::<usize>()
+                .expect("failed to parse count"));
+
+        let density = args.value_of("density").map(|s|
+            s.parse::<f32>()
+                .expect("failed to parse density"));
+
+        let system_bounds = args.values_of("bounds").map(|mut values| {
+            let mut next = || {
+                values.next()
+                    .expect("too few arguments for system bounds")
+                    .parse::<f32>()
+                    .expect("failed to parse bounds")
+            };
+            Bounds{
+                min: Point3::new(
+                    next(),
+                    next(),
+                    next()),
+                max: Point3::new(
+                    next(),
+                    next(),
+                    next())}
+        });
+
+        let avg_box_size = (size_range[0] + size_range[1]) / 2f32;
+
+        let count = if let Some(count) = count {
+            count
+        } else {
+            let density = density
+                .expect("calculation of count requires density to be known");
+            let system_size = system_bounds
+                .expect("calculation of count requires bounds to be known")
+                .sizef();
+            let volume = (system_size.sub_element_wise(avg_box_size)).product();
+            (density * volume) as usize
+        };
+
+        let system_bounds = if let Some(bounds) = system_bounds {
+            bounds
+        } else {
+            let density = density
+                .expect("calculation of count requires density to be known");
+            let volume = count as f32 / density;
+            let linear_size = volume.cbrt() + avg_box_size;
+            Bounds{
+                min: Point3::new(0f32, 0f32, 0f32),
+                max: Point3::new(
+                    linear_size,
+                    linear_size,
+                    linear_size)}
+        };
+
+        {
+            let size = system_bounds.sizef();
+            if size.x < size_range[1] ||
+               size.y < size_range[1] ||
+               size.z < size_range[1]
+            {
+                panic!("object size larger than system bounds; reduce object size, increase system bounds, or reduce density");
+            }
+        }
 
         let mut rng = rand_chacha::ChaChaRng::seed_from_u64(
             value_t!(args, "seed", u64).unwrap_or(0));
-        let mut bounds: Vec<(Bounds<Point3<f32>>, ID)> = Vec::with_capacity(n);
-        bounds.extend((0..n)
+        let mut bounds: Vec<(Bounds<Point3<f32>>, ID)> = Vec::with_capacity(count);
+        bounds.extend((0..count)
             .map(|id| {
                 let size = Vector3::new(0f32, 0f32, 0f32)
                     .map(|_| rng.gen_range(size_range[0], size_range[1]));
