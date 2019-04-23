@@ -1,32 +1,29 @@
 // mlodato, 20190317
 
 use super::index::SpatialIndex;
-use super::traits::{Containment, MaxAxis, Quantize};
+use super::traits::Quantize;
 
-use cgmath::{Point2, Vector2, Point3, Vector3};
+use cgmath::{Point2, Point3, Vector3};
 use cgmath::prelude::*;
 use num_traits::{Float, One, PrimInt};
 use smallvec::SmallVec;
 
 use std::fmt::{Debug, Formatter};
 
-impl<T> MaxAxis<T> for Vector2<T>
+fn fold_arr<Arr, State, F>(arr: Arr, init: State, f: F) -> State
 where
-    T: Ord
+    Arr: Array,
+    F: FnMut(State, Arr::Element) -> State
 {
-    fn max_axis(self) -> T {
-        std::cmp::max(self.x, self.y)
-    }
+    (0..Arr::len()).map(|i| arr[i]).fold(init, f)
 }
 
-impl<T> MaxAxis<T> for Vector3<T>
+fn max_axis<Arr>(arr: Arr) -> Arr::Element
 where
-    T: Ord
+    Arr: Array,
+    Arr::Element: Bounded + Ord
 {
-    fn max_axis(self) -> T {
-        use std::cmp::max;
-        max(max(self.x, self.y), self.z)
-    }
+    fold_arr(arr, Arr::Element::min_value(), std::cmp::max)
 }
 
 fn scale_at_depth(depth: u32) -> u32 {
@@ -72,7 +69,7 @@ pub struct Bounds<Point> {
 
 impl<Point> Bounds<Point>
 where
-    Point: EuclideanSpace + Copy
+    Point: EuclideanSpace + Array<Element = <Point as EuclideanSpace>::Scalar> + Copy
 {
     pub fn new(min: Point, max: Point) -> Self {
         Self{min, max}
@@ -91,6 +88,24 @@ where
         Point::Diff: ElementWise<Point::Scalar>
     {
         (self.max - self.min).add_element_wise(Point::Scalar::one())
+    }
+
+    pub fn overlaps(self, other: Bounds<Point>) -> bool {
+        for i in 0..Point::len() {
+            if self.min[i] > other.max[i] || self.max[i] < other.min[i] {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn contains(self, other: Bounds<Point>) -> bool {
+        for i in 0..Point::len() {
+            if self.min[i] > other.min[i] || self.max[i] < other.max[i] {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn center(self) -> Point {
@@ -117,39 +132,13 @@ where
     }
 }
 
-impl<T> Containment for Bounds<Point2<T>>
-where
-    T: cgmath::BaseNum
-{
-    fn contains(self, other: Bounds<Point2<T>>) -> bool {
-        self.min.x <= other.min.x &&
-        self.min.y <= other.min.y &&
-        self.max.x >= other.max.x &&
-        self.max.y >= other.max.y
-    }
-}
-
-impl<T> Containment for Bounds<Point3<T>>
-where
-    T: cgmath::BaseNum
-{
-    fn contains(self, other: Bounds<Point3<T>>) -> bool {
-        self.min.x <= other.min.x &&
-        self.min.y <= other.min.y &&
-        self.min.z <= other.min.z &&
-        self.max.x >= other.max.x &&
-        self.max.y >= other.max.y &&
-        self.max.z >= other.max.z
-    }
-}
-
 impl Quantize for Point2<f32> {
     type Quantized = Point2<u32>;
 
     fn quantize(self) -> Option<Self::Quantized> {
         // MAX_VALUE has 24 bits set because IEEE floats have 23 explicit + 1 implicit fractional bits
         const MIN_VALUE: f32 = std::u32::MIN as f32;
-        const MAX_VALUE: f32 = 0xffffff00u32 as f32;
+        const MAX_VALUE: f32 = 0xffff_ff00u32 as f32;
         const RANGE: f32 = MAX_VALUE - MIN_VALUE;
         Point2::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
     }
@@ -161,7 +150,7 @@ impl Quantize for Point3<f32> {
     fn quantize(self) -> Option<Self::Quantized> {
         // MAX_VALUE has 24 bits set because IEEE floats have 23 explicit + 1 implicit fractional bits
         const MIN_VALUE: f32 = std::u32::MIN as f32;
-        const MAX_VALUE: f32 = 0xffffff00u32 as f32;
+        const MAX_VALUE: f32 = 0xffff_ff00u32 as f32;
         const RANGE: f32 = MAX_VALUE - MIN_VALUE;
         Point3::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
     }
@@ -189,7 +178,7 @@ where
     type Output = SmallVec<[Index; 8]>;
 
     fn indices(self, min_depth: Option<u32>) -> Self::Output {
-        let max_axis = self.sizei().max_axis();
+        let max_axis = max_axis(self.sizei());
         let mut depth = (max_axis - 1u32).leading_zeros();
         if let Some(min_depth) = min_depth {
             if depth < min_depth {
@@ -343,10 +332,10 @@ where
 
         Self{
             cell_bounds: system_bounds,
-            origin     : origin,
-            direction  : direction,
-            range_min  : range_min,
-            range_max  : range_max}
+            origin,
+            direction,
+            range_min,
+            range_max}
     }
 }
 
@@ -367,8 +356,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
             self.clone(),
             self.clone()
         ];
-        for cell in 0..8 {
-            let result = &mut results[cell];
+        for (cell, result) in results.iter_mut().enumerate() {
             let range_min = &mut result.range_min;
             let range_max = &mut result.range_max;
             for axis in 0..3 {
@@ -386,6 +374,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
                 }
             }
             let bounds = &mut result.cell_bounds;
+            #[allow(clippy::needless_range_loop)]
             for axis in 0..3 {
                 let side = cell & (1 << axis) != 0;
                 if side {
@@ -400,6 +389,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
 
     fn test_order(&self) -> Self::TestOrder {
         let abs = self.direction.map(|x| x.abs());
+        #[allow(clippy::collapsible_if)]
         let axes = if abs.x <= abs.y && abs.x <= abs.z {
             if abs.y <= abs.z { [0, 1, 2] } else { [0, 2, 1] }
         } else if abs.y <= abs.z {
@@ -409,11 +399,11 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
         };
 
         let mut order: [usize; 8] = [0; 8];
-        for i in 0..8 {
-            let i0 = (i & 1 != 0) == (self.direction[axes[0]] >= 0f32);
-            let i1 = (i & 2 != 0) == (self.direction[axes[1]] >= 0f32);
-            let i2 = (i & 4 != 0) == (self.direction[axes[2]] >= 0f32);
-            order[i] =
+        for (cell_src, cell_dst) in order.iter_mut().enumerate() {
+            let i0 = (cell_src & 1 != 0) == (self.direction[axes[0]] >= 0f32);
+            let i1 = (cell_src & 2 != 0) == (self.direction[axes[1]] >= 0f32);
+            let i2 = (cell_src & 4 != 0) == (self.direction[axes[2]] >= 0f32);
+            *cell_dst =
                 ((i0 as usize) << axes[0]) |
                 ((i1 as usize) << axes[1]) |
                 ((i2 as usize) << axes[2])
@@ -423,7 +413,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
     }
 
     fn should_test(&self, nearest: f32) -> bool {
-        return self.range_min < self.range_max && self.range_min < nearest;
+        self.range_min < self.range_max && self.range_min < nearest
     }
 }
 

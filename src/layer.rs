@@ -2,7 +2,7 @@
 
 use super::geom::{Bounds, LevelIndexBounds, RayTestGeometry, TestGeometry};
 use super::index::SpatialIndex;
-use super::traits::{Containment, ObjectID, Quantize};
+use super::traits::{ObjectID, Quantize};
 
 use cgmath::prelude::*;
 use rustc_hash::FxHashSet;
@@ -68,7 +68,7 @@ where
     /// Iterate over all indices in the `Layer`
     /// 
     /// This is primarily intended for visualization + debugging
-    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, (Index, ID)> {
+    pub fn iter(&self) -> std::slice::Iter<'_, (Index, ID)> {
         self.tree.0.iter()
     }
 
@@ -88,7 +88,7 @@ where
         Iter: std::iter::Iterator<Item = (Bounds<Point_>, ID)>,
         Point_: EuclideanSpace<Scalar = f32>,
         Point_::Diff: ElementWise,
-        Bounds<Point_>: Containment + Quantize<Quantized = Bounds<Index::Point>>
+        Bounds<Point_>: Quantize<Quantized = Bounds<Index::Point>>
     {
         let (tree, sorted) = &mut self.tree;
 
