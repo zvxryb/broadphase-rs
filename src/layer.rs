@@ -535,6 +535,48 @@ where
     }
 }
 
+impl<Index, ID> PartialEq<Self> for Layer<Index, ID>
+where
+    Index: SpatialIndex,
+    ID: ObjectID,
+    Bounds<Index::Point>: LevelIndexBounds<Index>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.min_depth == other.min_depth &&
+        self.tree      == other.tree
+    }
+}
+
+impl<Index, ID> Eq for Layer<Index, ID>
+where
+    Index: SpatialIndex,
+    ID: ObjectID,
+    Bounds<Index::Point>: LevelIndexBounds<Index>
+{}
+
+impl<Index, ID> Clone for Layer<Index, ID>
+where
+    Index: SpatialIndex,
+    ID: ObjectID,
+    Bounds<Index::Point>: LevelIndexBounds<Index>
+{
+    fn clone(&self) -> Self {
+        Layer{
+            min_depth: self.min_depth,
+            tree: self.tree.clone(),
+
+            // don't bother cloning the contents of temporary buffers
+            collisions: Vec::with_capacity(self.collisions.capacity()),
+            test_results: Vec::with_capacity(self.test_results.capacity()),
+            processed: FxHashSet::default(),
+            invalid: Vec::new(),
+
+            #[cfg(feature="parallel")]
+            collisions_tls: CachedThreadLocal::new()
+        }
+    }
+}
+
 /// A builder for `Layer`s
 #[derive(Default)]
 pub struct LayerBuilder {
@@ -575,7 +617,7 @@ impl LayerBuilder {
         ID: ObjectID,
         Bounds<Index::Point>: LevelIndexBounds<Index>
     {
-        Layer::<Index, ID>{
+        Layer{
             min_depth: self.min_depth,
             tree: (match self.index_capacity {
                     Some(capacity) => Vec::with_capacity(capacity),

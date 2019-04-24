@@ -11,8 +11,8 @@ extern crate clap;
 #[macro_use]
 extern crate glium;
 
-use broadphase::Bounds;
-use broadphase_data::{ID, Scene};
+use broadphase::{Bounds, Layer};
+use broadphase_data::{Index, ID, Scene};
 use cgmath::{Deg, Matrix4, Point3, Quaternion, Rad, Vector3};
 use glium::glutin;
 
@@ -156,7 +156,8 @@ impl Command for GenBoxes {
 
         let scene = Scene{
             system_bounds,
-            object_bounds: bounds
+            object_bounds: bounds,
+            layer: Default::default()
         };
 
         scene.save(args.value_of("out_path").expect("no output path specified"))
@@ -559,6 +560,53 @@ impl Command for ShowBoxes {
     }
 }
 
+struct GenValidationData {}
+impl Command for GenValidationData {
+    fn name() -> &'static str { "gen_validation_data" }
+    fn init() -> clap::App<'static, 'static> {
+        use clap::Arg;
+        clap::SubCommand::with_name(Self::name())
+            .about("generate validation data for testing")
+            .arg(Arg::with_name("out_path")
+                .short("o")
+                .long("out")
+                .value_name("DIR")
+                .required(true)
+                .help("where to write output"))
+            .arg(Arg::with_name("in_path")
+                .short("i")
+                .long("in")
+                .value_name("PATH")
+                .required(true)
+                .help("path to a scene generated with gen_boxes"))
+    }
+
+    fn exec(args: &clap::ArgMatches) {
+        let input = Scene::load(args.value_of("in_path").unwrap())
+            .expect("failed to load scene");
+        let out_path = std::path::PathBuf::from(args.value_of("out_path").unwrap());
+        let save_scene = |rel_path: &str, scene: &Scene| {
+            let mut path = out_path.clone();
+            path.push(rel_path);
+            scene.save(path).expect("failed to save scene");
+        };
+        let mut scene = {
+            let mut layer: Layer<Index, ID> = Default::default();
+            layer.extend(
+                input.system_bounds,
+                input.object_bounds.iter().cloned());
+            Scene{
+                system_bounds: input.system_bounds.clone(),
+                object_bounds: Default::default(),
+                layer
+            }
+        };
+        save_scene("0_layer_unsorted.br_scene", &scene);
+        scene.layer.sort();
+        save_scene("1_layer_sorted.br_scene", &scene);
+    }
+}
+
 macro_rules! app_cmds {
     (app $app: expr; $(cmd $cmd: ident)*) => {
         {
@@ -582,5 +630,6 @@ fn main() {
             .version("0.1.0");
         cmd GenBoxes
         cmd ShowBoxes
+        cmd GenValidationData
     };
 }
