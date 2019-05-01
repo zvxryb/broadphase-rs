@@ -157,7 +157,10 @@ impl Command for GenBoxes {
         let scene = Scene{
             system_bounds,
             object_bounds: bounds,
-            layer: Default::default()
+            layer: Default::default(),
+            collisions: Default::default(),
+            hits: Default::default(),
+            nearest: Default::default()
         };
 
         scene.save(args.value_of("out_path").expect("no output path specified"))
@@ -167,11 +170,11 @@ impl Command for GenBoxes {
 
 struct ShowBoxes {}
 impl Command for ShowBoxes {
-    fn name() -> &'static str { "show_boxes" }
+    fn name() -> &'static str { "show" }
     fn init() -> clap::App<'static, 'static> {
         use clap::Arg;
         clap::SubCommand::with_name(Self::name())
-            .about("show a scene with multiple AABBs")
+            .about("show a scene")
             .arg(Arg::with_name("in_path")
                 .short("i")
                 .long("in")
@@ -185,10 +188,28 @@ impl Command for ShowBoxes {
                 .long("gui")
                 .conflicts_with("cli")
                 .help("show 3D visualization"))
+            .arg(Arg::with_name("select_id")
+                .long("select-id")
+                .requires("gui")
+                .value_name("ID")
+                .help("select by ID"))
+            .arg(Arg::with_name("select_all")
+                .long("select-all")
+                .requires("gui")
+                .conflicts_with("select_id")
+                .help("select all"))
     }
     fn exec(args: &clap::ArgMatches) {
         let scene = Scene::load(args.value_of("in_path").expect("no input path specified"))
             .expect("failed to read input");
+
+        let ids = {
+            let mut ids: Vec<ID> = scene.object_bounds.iter()
+                .map(|&(_, id)| id)
+                .collect();
+            ids.sort();
+            ids
+        };
 
         if args.is_present("gui") {
             let mut events_loop = glutin::EventsLoop::new();
@@ -201,6 +222,37 @@ impl Command for ShowBoxes {
                 .with_multisampling(4);
             let display = glium::Display::new(window_builder, context, &events_loop)
                 .expect("failed to create display");
+
+            #[derive(Copy, Clone)]
+            enum Selection {
+                None,
+                All,
+                ID(ID)
+            }
+
+            impl Selection {
+                fn cycle(&mut self, ids: &Vec<ID>, offset: i32) {
+                    let mut id = if let &mut Selection::ID(id) = self { id } else { 0 };
+                    let mut i = ids.binary_search(&id).unwrap();
+                    let n = ids.len();
+                    if offset < 0 {
+                        let offset = -offset as usize;
+                        i = (n + i - offset) % n;
+                    } else {
+                        i = (i + (offset as usize)) % n;
+                    }
+                    id = ids[i];
+                    *self = Selection::ID(id);
+                }
+            }
+
+            let mut selection = if let Some(id) = args.value_of("select_id") {
+                Selection::ID(id.parse::<ID>().unwrap())
+            } else if args.is_present("select_all") {
+                Selection::All
+            } else {
+                Selection::None
+            };
 
             let box_outline_vbo = {
                 #[derive(Copy, Clone)]
@@ -251,27 +303,93 @@ impl Command for ShowBoxes {
                 ]).expect("failed to create vbo")
             };
 
-            let box_instances_vbo = {
-                #[derive(Copy, Clone)]
-                struct Vertex {
-                    aabb_min: [f32; 3],
-                    aabb_max: [f32; 3],
-                    color: [f32; 3]
+            #[derive(Copy, Clone)]
+            struct InstanceData {
+                aabb_min: [f32; 3],
+                aabb_max: [f32; 3],
+                fill_color: [f32; 4],
+                edge_color: [f32; 4]
+            }
+            implement_vertex!(InstanceData, aabb_min, aabb_max, fill_color, edge_color);
+
+            struct InstanceBuffer {
+                vbo: glium::VertexBuffer<InstanceData>,
+                count: usize
+            }
+
+            impl InstanceBuffer {
+                fn resize(&mut self, display: &glium::Display, count: usize) {
+                    if count > self.vbo.len() {
+                        self.vbo = glium::VertexBuffer::<InstanceData>::empty_persistent(display, count)
+                            .expect("failed to create vbo");
+                    }
+                    self.count = count;
                 }
 
-                implement_vertex!(Vertex, aabb_min, aabb_max, color);
+                fn slice(&self) -> glium::vertex::VertexBufferSlice<'_, InstanceData> {
+                    self.vbo.slice(0..self.count).unwrap()
+                }
+            }
 
-                glium::VertexBuffer::immutable(&display,
-                    scene.object_bounds.iter()
-                        .map(|&(bounds, _)| {
-                            Vertex{
-                                aabb_min: [bounds.min.x, bounds.min.y, bounds.min.z],
-                                aabb_max: [bounds.max.x, bounds.max.y, bounds.max.z],
-                                color: [1f32; 3]}})
-                        .collect::<Vec<Vertex>>()
-                        .as_slice())
-                    .expect("failed to create vbo")
-            };
+            fn update_instance_data(
+                display: &glium::Display,
+                buffer: &mut InstanceBuffer,
+                scene: &Scene,
+                selection: Selection)
+            {
+                let is_selected = |id| match selection {
+                    Selection::ID(id_) => id == id_,
+                    Selection::All => true,
+                    Selection::None => false,
+                };
+                let collisions: Vec<ID> = scene.collisions.iter()
+                    .filter_map(|&(id0, id1)|
+                        if is_selected(id0) {
+                            Some(id1)
+                        } else if is_selected(id1) {
+                            Some(id0)
+                        } else {
+                            None
+                        })
+                    .collect();
+                let is_collided = |id| collisions.iter().any(|&id_| id == id_);
+                let mut data: Vec<InstanceData> = Vec::with_capacity(buffer.vbo.len());
+                for &(bounds, id) in &scene.object_bounds {
+                    let (fill_color, edge_color) = if is_selected(id) {
+                        ([0.5f32, 1f32, 0f32, 1f32], [0f32, 0f32, 0f32, 1f32])
+                    } else if is_collided(id) {
+                        ([1f32, 0.5f32, 0f32, 1f32], [0f32, 0f32, 0f32, 1f32])
+                    } else if let Selection::None = selection {
+                        ([1f32, 1f32, 1f32, 1f32], [0f32, 0f32, 0f32, 1f32])
+                    } else {
+                        ([1f32, 1f32, 1f32, 0.5f32], [0f32, 0f32, 0f32, 0.5f32])
+                    };
+                    data.push(InstanceData{
+                        aabb_min: [bounds.min.x, bounds.min.y, bounds.min.z],
+                        aabb_max: [bounds.max.x, bounds.max.y, bounds.max.z],
+                        fill_color,
+                        edge_color});
+                }
+                for &(index, id) in scene.layer.iter() {
+                    use broadphase::SystemBounds;
+                    if !is_selected(id) { continue; }
+                    let local: Bounds<_> = index.into();
+                    let global = scene.system_bounds.to_global(local);
+                    data.push(InstanceData{
+                        aabb_min: [global.min.x, global.min.y, global.min.z],
+                        aabb_max: [global.max.x, global.max.y, global.max.z],
+                        fill_color: [1f32, 1f32, 1f32, 0f32],
+                        edge_color: [0f32, 0.5f32, 1f32, 1f32]});
+                }
+                buffer.resize(display, data.len());
+                buffer.slice().write(data.as_slice());
+            }
+
+            let mut box_instances_buffer = InstanceBuffer{
+                vbo: glium::VertexBuffer::<InstanceData>::empty_persistent(&display, scene.object_bounds.len())
+                    .expect("failed to create vbo"),
+                count: 0};
+            update_instance_data(&display, &mut box_instances_buffer, &scene, selection);
 
             #[derive(Debug)]
             struct Camera {
@@ -290,7 +408,7 @@ impl Command for ShowBoxes {
                 Camera{
                     position: scene.system_bounds.max,
                     orientation: Quaternion::from_arc(-Vector3::unit_z(), -size.normalize(), None),
-                    fov_y: Deg(90f32).into(),
+                    fov_y: Deg(60f32).into(),
                     aspect_ratio: 1f32,
                     near,
                     far
@@ -315,9 +433,10 @@ impl Command for ShowBoxes {
                     in vec3 normal;
                     in vec3 aabb_min;
                     in vec3 aabb_max;
-                    in vec3 color;
+                    in vec4 fill_color;
+                    in vec4 edge_color;
 
-                    out vec3 v_color;
+                    out vec4 v_color;
 
                     uniform transforms {
                         mat4 view_proj;
@@ -327,19 +446,25 @@ impl Command for ShowBoxes {
 
                     void main() {
                         vec4 global = vec4(mix(aabb_min, aabb_max, position), 1.0);
-                        v_color = color * (0.4 * dot(light_dir, normal) + 0.6);
+                        v_color = vec4(fill_color.rgb * (0.4 * dot(light_dir, normal) + 0.6), fill_color.a);
                         gl_Position = view_proj * global;
                     }
                 "#,
                 r#"
                     #version 450 core
 
-                    in vec3 v_color;
+                    in vec4 v_color;
 
                     out vec4 f_color;
 
                     void main() {
-                        f_color = vec4(v_color, 1.0);
+                        int mask = 0x00000000;
+                        if (v_color.a > 0.125) { mask |= 0x11111111; }
+                        if (v_color.a > 0.375) { mask |= 0x22222222; }
+                        if (v_color.a > 0.625) { mask |= 0x44444444; }
+                        if (v_color.a > 0.875) { mask |= 0x88888888; }
+                        gl_SampleMask[0] = mask;
+                        f_color = vec4(v_color.rgb, 1.0);
                     }
                 "#,
                 None)
@@ -353,8 +478,10 @@ impl Command for ShowBoxes {
                     in vec3 normal;
                     in vec3 aabb_min;
                     in vec3 aabb_max;
+                    in vec4 fill_color;
+                    in vec4 edge_color;
 
-                    out vec3 v_color;
+                    out vec4 v_color;
 
                     uniform transforms {
                         mat4 view_proj;
@@ -364,25 +491,31 @@ impl Command for ShowBoxes {
 
                     void main() {
                         vec4 global = vec4(mix(aabb_min, aabb_max, position), 1.0);
-                        v_color = vec3(0.0, 0.0, 0.0);
+                        v_color = edge_color;
                         gl_Position = view_proj * global;
                     }
                 "#,
                 r#"
                     #version 450 core
 
-                    in vec3 v_color;
+                    in vec4 v_color;
 
                     out vec4 f_color;
 
                     void main() {
-                        f_color = vec4(v_color, 1.0);
+                        int mask = 0x00000000;
+                        if (v_color.a > 0.125) { mask |= 0x11111111; }
+                        if (v_color.a > 0.375) { mask |= 0x22222222; }
+                        if (v_color.a > 0.625) { mask |= 0x44444444; }
+                        if (v_color.a > 0.875) { mask |= 0x88888888; }
+                        gl_SampleMask[0] = mask;
+                        f_color = vec4(v_color.rgb, 1.0);
                     }
                 "#,
                 None)
                 .expect("failed to compile shader");
 
-            let mut draw = |display: &glium::Display, camera: &Camera| {
+            let mut draw = |display: &glium::Display, camera: &Camera, instance_buffer: &InstanceBuffer| {
 
                 let rot: Matrix4<f32> = camera.orientation.invert().into();
                 let offs = Matrix4::from_translation(Point3::new(0f32, 0f32, 0f32) - camera.position);
@@ -413,7 +546,7 @@ impl Command for ShowBoxes {
                     };
                     let uniforms = uniform!{ transforms: &transforms_ubo };
                     frame.draw(
-                        (&box_solid_vbo, box_instances_vbo.per_instance().unwrap()),
+                        (&box_solid_vbo, instance_buffer.slice().per_instance().unwrap()),
                         glium::index::NoIndices(glium::index::PrimitiveType::TrianglesList),
                         &program_solid, &uniforms, &params)
                         .expect("failed to draw frame");
@@ -433,7 +566,7 @@ impl Command for ShowBoxes {
                         color: [1f32, 0f32, 0f32]
                     };
                     frame.draw(
-                        (&box_outline_vbo, box_instances_vbo.per_instance().unwrap()),
+                        (&box_outline_vbo, instance_buffer.slice().per_instance().unwrap()),
                         glium::index::NoIndices(glium::index::PrimitiveType::LinesList),
                         &program_outline, &uniforms, &params)
                         .expect("failed to draw frame");
@@ -456,20 +589,45 @@ impl Command for ShowBoxes {
                     match event {
                         Event::DeviceEvent{event, ..} => {
                             match event {
-                                DeviceEvent::Key(glutin::KeyboardInput{state, virtual_keycode, ..}) => {
-                                    let move_dir = match virtual_keycode {
-                                        Some(glutin::VirtualKeyCode::W) => Some(&mut move_forward),
-                                        Some(glutin::VirtualKeyCode::A) => Some(&mut move_left),
-                                        Some(glutin::VirtualKeyCode::S) => Some(&mut move_back),
-                                        Some(glutin::VirtualKeyCode::D) => Some(&mut move_right),
-                                        _ => None
-                                    };
-
-                                    if let Some(move_dir) = move_dir {
-                                        *move_dir = state == glutin::ElementState::Pressed;
+                                DeviceEvent::Key(glutin::KeyboardInput{state, virtual_keycode, ..}) =>
+                                    match virtual_keycode {
+                                        Some(glutin::VirtualKeyCode::LBracket) |
+                                        Some(glutin::VirtualKeyCode::RBracket) =>
+                                            if state == glutin::ElementState::Pressed {
+                                                let offset = match virtual_keycode {
+                                                    Some(glutin::VirtualKeyCode::LBracket) => -1,
+                                                    Some(glutin::VirtualKeyCode::RBracket) =>  1,
+                                                    _ => panic!()
+                                                };
+                                                selection.cycle(&ids, offset);
+                                                update_instance_data(&display, &mut box_instances_buffer, &scene, selection);
+                                                redraw = true;
+                                            }
+                                        Some(glutin::VirtualKeyCode::Space) =>
+                                            if state == glutin::ElementState::Pressed {
+                                                selection = match selection {
+                                                    Selection::All => Selection::None,
+                                                    _ => Selection::All
+                                                };
+                                                update_instance_data(&display, &mut box_instances_buffer, &scene, selection);
+                                                redraw = true;
+                                            }
+                                        Some(glutin::VirtualKeyCode::W) |
+                                        Some(glutin::VirtualKeyCode::A) |
+                                        Some(glutin::VirtualKeyCode::S) |
+                                        Some(glutin::VirtualKeyCode::D) => {
+                                            let move_dir = match virtual_keycode {
+                                                Some(glutin::VirtualKeyCode::W) => &mut move_forward,
+                                                Some(glutin::VirtualKeyCode::A) => &mut move_left,
+                                                Some(glutin::VirtualKeyCode::S) => &mut move_back,
+                                                Some(glutin::VirtualKeyCode::D) => &mut move_right,
+                                                _ => panic!()
+                                            };
+                                            *move_dir = state == glutin::ElementState::Pressed;
+                                        }
+                                        _ => {}
                                     }
-                                }
-                                DeviceEvent::MouseMotion{delta: (dx, dy)} => {
+                                DeviceEvent::MouseMotion{delta: (dx, dy)} =>
                                     if mouse_grab.is_some() {
                                         const DEG_PER_PX: f32 = 0.2;
                                         let rot_x = -(dy as f32) * DEG_PER_PX / 180f32;
@@ -478,7 +636,6 @@ impl Command for ShowBoxes {
                                         camera.orientation = (camera.orientation * Quaternion::new(rot_w, rot_x, rot_y, 0f32)).normalize();
                                         redraw = true;
                                     }
-                                }
                                 _ => {}
                             }
                         }
@@ -540,7 +697,7 @@ impl Command for ShowBoxes {
                 time = std::time::Instant::now();
 
                 if redraw {
-                    draw(&display, &camera);
+                    draw(&display, &camera, &box_instances_buffer);
                 }
             }
         } else {
@@ -555,6 +712,14 @@ impl Command for ShowBoxes {
                     bounds.max.x,
                     bounds.max.y,
                     bounds.max.z);
+            }
+            println!("layer:");
+            for &(index, id) in scene.layer.iter() {
+                println!("\tid: {:5}, index: {:?}", id, index);
+            }
+            println!("collisions:");
+            for ids in scene.collisions {
+                println!("\tids: {:5}, {:5}", ids.0, ids.1);
             }
         }
     }
@@ -590,20 +755,21 @@ impl Command for GenValidationData {
             path.push(rel_path);
             scene.save(path).expect("failed to save scene");
         };
-        let mut scene = {
-            let mut layer: Layer<Index, ID> = Default::default();
-            layer.extend(
-                input.system_bounds,
-                input.object_bounds.iter().cloned());
-            Scene{
-                system_bounds: input.system_bounds.clone(),
-                object_bounds: Default::default(),
-                layer
-            }
-        };
+
+        let mut scene = input.clone();
+        scene.layer.extend(
+            input.system_bounds,
+            input.object_bounds.iter().cloned());
         save_scene("0_layer_unsorted.br_scene", &scene);
+
         scene.layer.sort();
         save_scene("1_layer_sorted.br_scene", &scene);
+
+        {
+            let mut scene = scene.clone();
+            scene.collisions = scene.layer.scan().clone();
+            save_scene("2_layer_collisions.br_scene", &scene);
+        }
     }
 }
 

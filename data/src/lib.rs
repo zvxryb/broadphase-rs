@@ -17,7 +17,7 @@ pub type ID = u32;
 pub type Index = Index64_3D;
 
 const FORMAT_SIGNATURE: [u8;8] = *b"BR_SCENE";
-const FORMAT_VERSION: (u16, u16) = (1, 1);
+const FORMAT_VERSION: (u16, u16) = (1, 2);
 
 #[derive(Deserialize, Serialize)]
 struct Header {
@@ -25,20 +25,30 @@ struct Header {
     version: (u16, u16)
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct SceneV1_0 {
     pub system_bounds: Bounds<Point3<f32>>,
     pub object_bounds: Vec<(Bounds<Point3<f32>>, ID)>
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 pub struct SceneV1_1 {
     pub system_bounds: Bounds<Point3<f32>>,
     pub object_bounds: Vec<(Bounds<Point3<f32>>, ID)>,
     pub layer: Layer<Index, ID>
 }
 
-pub type Scene = SceneV1_1;
+#[derive(Clone, Deserialize, Serialize)]
+pub struct SceneV1_2 {
+    pub system_bounds: Bounds<Point3<f32>>,
+    pub object_bounds: Vec<(Bounds<Point3<f32>>, ID)>,
+    pub layer: Layer<Index, ID>,
+    pub collisions: Vec<(ID, ID)>,
+    pub hits: Vec<ID>,
+    pub nearest: Option<(ID, f32)>
+}
+
+pub type Scene = SceneV1_2;
 
 #[derive(Debug)]
 pub enum SceneIOError {
@@ -71,6 +81,7 @@ impl Scene {
         match header.version.1 {
             0 => bincode::deserialize_from::<_, SceneV1_0>(io).map(|scene| scene.into()),
             1 => bincode::deserialize_from::<_, SceneV1_1>(io).map(|scene| scene.into()),
+            2 => bincode::deserialize_from::<_, SceneV1_2>(io).map(|scene| scene.into()),
             _ => panic!()
         }.map_err(|err| SceneIOError::BincodeError(err))
     }
@@ -98,7 +109,23 @@ impl From<SceneV1_0> for Scene {
         Scene{
             system_bounds: scene.system_bounds,
             object_bounds: scene.object_bounds,
-            layer: Layer::default()
+            layer: Default::default(),
+            collisions: Default::default(),
+            hits: Default::default(),
+            nearest: Default::default()
+        }
+    }
+}
+
+impl From<SceneV1_1> for Scene {
+    fn from(scene: SceneV1_1) -> Self {
+        Scene{
+            system_bounds: scene.system_bounds,
+            object_bounds: scene.object_bounds,
+            layer: scene.layer,
+            collisions: Default::default(),
+            hits: Default::default(),
+            nearest: Default::default()
         }
     }
 }

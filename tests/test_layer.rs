@@ -39,10 +39,14 @@ fn extend() {
     }
 }
 
-fn is_sorted<Item: Ord, Iter: Iterator<Item = Item>>(mut iter: Iter) -> bool {
+fn is_sorted<Item: Ord, Iter: Iterator<Item = Item>>(mut iter: Iter, unique: bool) -> bool {
     iter.try_fold(None, |old, new| {
         if let Some(old) = old {
-            if old <= new { Some(Some(new)) } else { None }
+            if old > new || (unique && old == new) {
+                None
+            } else {
+                Some(Some(new))
+            }
         } else {
             Some(Some(new))
         }
@@ -56,7 +60,7 @@ fn sort() {
 
     let mut actual = input.layer;
     actual.sort();
-    if !is_sorted(actual.iter()) {
+    if !is_sorted(actual.iter(), false) {
         panic!("Layer::sort() produced unsorted output");
     }
 
@@ -74,7 +78,7 @@ fn par_sort() {
 
     let mut actual = input.layer;
     actual.par_sort();
-    if !is_sorted(actual.iter()) {
+    if !is_sorted(actual.iter(), false) {
         panic!("Layer::par_sort() produced unsorted output");
     }
 
@@ -82,5 +86,39 @@ fn par_sort() {
 
     if actual != expected {
         panic!("Layer::sort() produced unexpected results");
+    }
+}
+
+#[test]
+fn scan() {
+    let mut input = load_scene("validation/1_layer_sorted.br_scene");
+    let validation = load_scene("validation/2_layer_collisions.br_scene");
+
+    let actual = input.layer.scan().clone();
+    if !is_sorted(actual.iter(), true) {
+        panic!("Layer::scan() produced unsorted output");
+    }
+
+    let expected = validation.collisions;
+
+    if actual != expected {
+        panic!("Layer::scan() produced unexpected results");
+    }
+}
+
+#[test]
+fn par_scan() {
+    let mut input = load_scene("validation/1_layer_sorted.br_scene");
+    let validation = load_scene("validation/2_layer_collisions.br_scene");
+
+    let actual = input.layer.par_scan().clone();
+    if !is_sorted(actual.iter(), true) {
+        panic!("Layer::par_scan() produced unsorted output");
+    }
+
+    let expected = validation.collisions;
+
+    if actual != expected {
+        panic!("Layer::par_scan() produced unexpected results");
     }
 }

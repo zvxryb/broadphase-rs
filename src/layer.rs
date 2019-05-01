@@ -1,8 +1,8 @@
 // mlodato, 20190318
 
-use super::geom::{Bounds, LevelIndexBounds, RayTestGeometry, TestGeometry};
+use super::geom::{Bounds, IndexGenerator, RayTestGeometry, SystemBounds, TestGeometry};
 use super::index::SpatialIndex;
-use super::traits::{ObjectID, Quantize};
+use super::traits::ObjectID;
 
 use cgmath::prelude::*;
 use rustc_hash::FxHashSet;
@@ -35,7 +35,7 @@ pub struct Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
-    Bounds<Index::Point>: LevelIndexBounds<Index>
+    Bounds<Index::Point>: IndexGenerator<Index>
 {
     // persistant state:
     min_depth: u32,
@@ -63,7 +63,7 @@ impl<Index, ID> Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
-    Bounds<Index::Point>: LevelIndexBounds<Index>
+    Bounds<Index::Point>: IndexGenerator<Index>
 {
     /// Iterate over all indices in the `Layer`
     /// 
@@ -88,7 +88,7 @@ where
         Iter: std::iter::Iterator<Item = (Bounds<Point_>, ID)>,
         Point_: EuclideanSpace<Scalar = f32>,
         Point_::Diff: ElementWise,
-        Bounds<Point_>: Quantize<Quantized = Bounds<Index::Point>>
+        Bounds<Point_>: SystemBounds<Point_, Index::Point>
     {
         let (tree, sorted) = &mut self.tree;
 
@@ -102,10 +102,8 @@ where
                 continue
             }
 
-            tree.extend(bounds
-                .normalize_to_system(system_bounds)
-                .quantize()
-                .expect("failed to filter bounds outside system")
+            tree.extend(system_bounds
+                .to_local(bounds)
                 .indices(Some(self.min_depth))
                 .into_iter()
                 .map(|index| (index, id)));
@@ -539,7 +537,7 @@ impl<Index, ID> PartialEq<Self> for Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
-    Bounds<Index::Point>: LevelIndexBounds<Index>
+    Bounds<Index::Point>: IndexGenerator<Index>
 {
     fn eq(&self, other: &Self) -> bool {
         self.min_depth == other.min_depth &&
@@ -551,14 +549,14 @@ impl<Index, ID> Eq for Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
-    Bounds<Index::Point>: LevelIndexBounds<Index>
+    Bounds<Index::Point>: IndexGenerator<Index>
 {}
 
 impl<Index, ID> Clone for Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
-    Bounds<Index::Point>: LevelIndexBounds<Index>
+    Bounds<Index::Point>: IndexGenerator<Index>
 {
     fn clone(&self) -> Self {
         Layer{
@@ -615,7 +613,7 @@ impl LayerBuilder {
     where
         Index: SpatialIndex,
         ID: ObjectID,
-        Bounds<Index::Point>: LevelIndexBounds<Index>
+        Bounds<Index::Point>: IndexGenerator<Index>
     {
         Layer{
             min_depth: self.min_depth,
