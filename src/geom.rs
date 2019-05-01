@@ -436,16 +436,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn to_local() {
+    fn system_bounds() {
         let system_bounds = Bounds{
             min: Point3::new(-64f32, -64f32, -64f32),
             max: Point3::new( 64f32,  64f32,  64f32)};
         let global = Bounds{
             min: Point3::new(-32f32, -32f32, -32f32),
             max: Point3::new( 32f32,  32f32,  32f32)};
-        let local: Bounds<Point3<u32>> = system_bounds.bounds_to_local(global);
+        let local: Bounds<Point3<u32>> = system_bounds.to_local(global);
         let expected = global;
-        let actual = system_bounds.bounds_to_global(local);
+        let actual = system_bounds.to_global(local);
         assert_eq!(actual, expected);
     }
 }
