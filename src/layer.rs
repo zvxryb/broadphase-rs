@@ -1,8 +1,8 @@
 // mlodato, 20190318
 
-use super::geom::{Bounds, LevelIndexBounds, RayTestGeometry, TestGeometry};
+use super::geom::{Bounds, IndexGenerator, RayTestGeometry, SystemBounds, TestGeometry};
 use super::index::SpatialIndex;
-use super::traits::{Containment, ObjectID, Quantize};
+use super::traits::ObjectID;
 
 use cgmath::prelude::*;
 use rustc_hash::FxHashSet;
@@ -29,20 +29,33 @@ use thread_local::CachedThreadLocal;
 /// 
 /// `ID` is the type representing object IDs
 
+#[derive(Default)]
+#[cfg_attr(any(test, feature="serde"), derive(Deserialize, Serialize))]
 pub struct Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
-    Bounds<Index::Point>: LevelIndexBounds<Index>
+    Bounds<Index::Point>: IndexGenerator<Index>
 {
+    // persistant state:
     min_depth: u32,
     tree: (Vec<(Index, ID)>, bool),
+
+    // temporary data used within a method:
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     collisions: Vec<(ID, ID)>,
+
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     test_results: Vec<ID>,
+
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     processed: FxHashSet<ID>,
+
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     invalid: Vec<ID>,
 
     #[cfg(feature="parallel")]
+    #[cfg_attr(any(test, feature="serde"), serde(skip))]
     collisions_tls: CachedThreadLocal<RefCell<Vec<(ID, ID)>>>,
 }
 
@@ -50,12 +63,12 @@ impl<Index, ID> Layer<Index, ID>
 where
     Index: SpatialIndex,
     ID: ObjectID,
-    Bounds<Index::Point>: LevelIndexBounds<Index>
+    Bounds<Index::Point>: IndexGenerator<Index>
 {
     /// Iterate over all indices in the `Layer`
     /// 
     /// This is primarily intended for visualization + debugging
-    pub fn iter<'a>(&'a self) -> std::slice::Iter<'a, (Index, ID)> {
+    pub fn iter(&self) -> std::slice::Iter<'_, (Index, ID)> {
         self.tree.0.iter()
     }
 
@@ -75,7 +88,7 @@ where
         Iter: std::iter::Iterator<Item = (Bounds<Point_>, ID)>,
         Point_: EuclideanSpace<Scalar = f32>,
         Point_::Diff: ElementWise,
-        Bounds<Point_>: Containment + Quantize<Quantized = Bounds<Index::Point>>
+        Bounds<Point_>: SystemBounds<Point_, Index::Point>
     {
         let (tree, sorted) = &mut self.tree;
 
@@ -89,10 +102,8 @@ where
                 continue
             }
 
-            tree.extend(bounds
-                .normalize_to_system(system_bounds)
-                .quantize()
-                .expect("failed to filter bounds outside system")
+            tree.extend(system_bounds
+                .to_local(bounds)
                 .indices(Some(self.min_depth))
                 .into_iter()
                 .map(|index| (index, id)));
@@ -522,6 +533,48 @@ where
     }
 }
 
+impl<Index, ID> PartialEq<Self> for Layer<Index, ID>
+where
+    Index: SpatialIndex,
+    ID: ObjectID,
+    Bounds<Index::Point>: IndexGenerator<Index>
+{
+    fn eq(&self, other: &Self) -> bool {
+        self.min_depth == other.min_depth &&
+        self.tree      == other.tree
+    }
+}
+
+impl<Index, ID> Eq for Layer<Index, ID>
+where
+    Index: SpatialIndex,
+    ID: ObjectID,
+    Bounds<Index::Point>: IndexGenerator<Index>
+{}
+
+impl<Index, ID> Clone for Layer<Index, ID>
+where
+    Index: SpatialIndex,
+    ID: ObjectID,
+    Bounds<Index::Point>: IndexGenerator<Index>
+{
+    fn clone(&self) -> Self {
+        Layer{
+            min_depth: self.min_depth,
+            tree: self.tree.clone(),
+
+            // don't bother cloning the contents of temporary buffers
+            collisions: Vec::with_capacity(self.collisions.capacity()),
+            test_results: Vec::with_capacity(self.test_results.capacity()),
+            processed: FxHashSet::default(),
+            invalid: Vec::new(),
+
+            #[cfg(feature="parallel")]
+            collisions_tls: CachedThreadLocal::new()
+        }
+    }
+}
+
 /// A builder for `Layer`s
 #[derive(Default)]
 pub struct LayerBuilder {
@@ -560,9 +613,9 @@ impl LayerBuilder {
     where
         Index: SpatialIndex,
         ID: ObjectID,
-        Bounds<Index::Point>: LevelIndexBounds<Index>
+        Bounds<Index::Point>: IndexGenerator<Index>
     {
-        Layer::<Index, ID>{
+        Layer{
             min_depth: self.min_depth,
             tree: (match self.index_capacity {
                     Some(capacity) => Vec::with_capacity(capacity),

@@ -388,8 +388,8 @@ impl<'a> specs::System<'a> for Collisions {
 
         let x_min = screen_coords.0.x;
         let y_min = screen_coords.0.y;
-        let x_max = screen_coords.0.w + x_min - 1f32;
-        let y_max = screen_coords.0.h + y_min - 1f32;
+        let x_max = screen_coords.0.w + x_min;
+        let y_max = screen_coords.0.h + y_min;
 
         for (mut pos, &Radius(r)) in (&mut positions, &radii).join() {
             if pos.1.x - r < x_min {
@@ -490,21 +490,19 @@ impl ggez::event::EventHandler for GameState {
 
         let collision_config = self.world.read_resource::<CollisionSystemConfig>();
         if collision_config.enabled {
-            let scale  = collision_config.bounds.size();
-            let offset = collision_config.bounds.min;
-
             let iter = &mut self.collisions.system.iter().peekable();
             while let Some(_) = iter.peek() {
                 let mut mesh_builder = MeshBuilder::new();
                 for &(index, _) in iter.take(1000) {
-                    use broadphase::SpatialIndex;
-                    let origin = index.origin().map(|x| (x as f32) / ((u32::max_value() - 1) as f32));
-                    let size = ((32 - index.depth()) as f32).exp2() / ((u32::max_value() - 1) as f32);
+                    use broadphase::SystemBounds;
+                    let local: Bounds<_> = index.into();
+                    let global = collision_config.bounds.to_global(local);
+                    let global_size = global.sizef();
                     let rect = Rect::new(
-                        scale.x * origin.x + offset.x,
-                        scale.y * origin.y + offset.y,
-                        scale.x * size,
-                        scale.y * size);
+                        global.min.x,
+                        global.min.y,
+                        global_size.x,
+                        global_size.y);
                     mesh_builder.rectangle(DrawMode::stroke(1.5f32), rect,
                         ggez::graphics::Color::new(0.3f32, 0.3f32, 0.3f32, 1f32));
                 }

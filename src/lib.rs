@@ -50,6 +50,10 @@ extern crate cgmath;
 extern crate num_traits;
 extern crate rustc_hash;
 
+#[cfg(any(test, feature="serde"))]
+#[macro_use]
+extern crate serde;
+
 #[cfg(feature="parallel")]
 extern crate rayon;
 
@@ -73,6 +77,6 @@ mod geom;
 mod index;
 mod layer;
 
-pub use geom::{Bounds, TestGeometry, RayTestGeometry};
+pub use geom::{Bounds, TestGeometry, RayTestGeometry, SystemBounds};
 pub use index::{SpatialIndex, Index64_3D};
 pub use layer::{Layer, LayerBuilder};

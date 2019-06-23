@@ -55,6 +55,7 @@ pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
 /// A 64-bit 3D index which provides 19 bits' precision per axis
 
 #[derive(Clone, Copy, Default, Eq, Ord, PartialEq, PartialOrd)]
+#[cfg_attr(any(test, feature="serde"), derive(Deserialize, Serialize))]
 pub struct Index64_3D(u64);
 
 impl Index64_3D {

@@ -1,31 +1,38 @@
 // mlodato, 20190317
 
 use super::index::SpatialIndex;
-use super::traits::{Containment, MaxAxis, Quantize};
 
-use cgmath::{Point2, Vector2, Point3, Vector3};
+use cgmath::{Point3, Vector3};
 use cgmath::prelude::*;
+use num_traits::{Float, One, PrimInt};
 use smallvec::SmallVec;
 
 use std::fmt::{Debug, Formatter};
 
-impl<T> MaxAxis<T> for Vector2<T>
+fn fold_arr<Arr, State, F>(arr: Arr, init: State, f: F) -> State
 where
-    T: Ord
+    Arr: Array,
+    F: FnMut(State, Arr::Element) -> State
 {
-    fn max_axis(self) -> T {
-        std::cmp::max(self.x, self.y)
+    (0..Arr::len()).map(|i| arr[i]).fold(init, f)
+}
+
+fn init_arr<Arr, F>(arr: &mut Arr, mut f: F)
+where
+    Arr: Array,
+    F: FnMut(usize) -> Arr::Element
+{
+    for i in 0..Arr::len() {
+        arr[i] = f(i);
     }
 }
 
-impl<T> MaxAxis<T> for Vector3<T>
+fn max_axis<Arr>(arr: Arr) -> Arr::Element
 where
-    T: Ord
+    Arr: Array,
+    Arr::Element: Bounded + Ord
 {
-    fn max_axis(self) -> T {
-        use std::cmp::max;
-        max(max(self.x, self.y), self.z)
-    }
+    fold_arr(arr, Arr::Element::min_value(), std::cmp::max)
 }
 
 fn scale_at_depth(depth: u32) -> u32 {
@@ -48,7 +55,7 @@ fn truncate_to_depth(x: u32, depth: u32) -> u32 {
 /// By default, index `depth` is chosen such that this returns no more than 4 (2D) or 8 (3D) indices.
 /// `min_depth` provides a lower-bound which enables quick partitioning (for parallel task generation)
 
-pub trait LevelIndexBounds<Index>
+pub trait IndexGenerator<Index>
 where
     Index: SpatialIndex,
     Self::Output: IntoIterator<Item = Index>
@@ -61,8 +68,9 @@ where
 
 /// An axis-aligned bounding box
 /// 
-/// This is used in public interfaces, as a means to obtain information necessary to generate indices.
+/// Min and max values are _inclusive_
 #[derive(Copy, Clone, Debug, PartialEq)]
+#[cfg_attr(any(test, feature="serde"), derive(Deserialize, Serialize))]
 pub struct Bounds<Point> {
     pub min: Point,
     pub max: Point
@@ -70,113 +78,110 @@ pub struct Bounds<Point> {
 
 impl<Point> Bounds<Point>
 where
-    Point: EuclideanSpace + Copy
+    Point: EuclideanSpace + Array<Element = <Point as EuclideanSpace>::Scalar> + Copy
 {
     pub fn new(min: Point, max: Point) -> Self {
         Self{min, max}
     }
 
-    pub fn size(self) -> Point::Diff {
+    pub fn sizef(self) -> Point::Diff
+    where
+        Point::Scalar: Float
+    {
         self.max - self.min
+    }
+
+    pub fn sizei(self) -> Point::Diff
+    where
+        Point::Scalar: PrimInt + One,
+        Point::Diff: ElementWise<Point::Scalar>
+    {
+        (self.max - self.min).add_element_wise(Point::Scalar::one())
+    }
+
+    pub fn overlaps(self, other: Bounds<Point>) -> bool {
+        for i in 0..Point::len() {
+            if self.min[i] > other.max[i] || self.max[i] < other.min[i] {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn contains(self, other: Bounds<Point>) -> bool {
+        for i in 0..Point::len() {
+            if self.min[i] > other.min[i] || self.max[i] < other.max[i] {
+                return false;
+            }
+        }
+        true
     }
 
     pub fn center(self) -> Point {
         self.min.midpoint(self.max)
     }
-
-    pub fn normalize_point(self, point: Point) -> Point
-    where
-        Point::Diff: ElementWise
-    {
-        EuclideanSpace::from_vec((point - self.min).div_element_wise(self.size()))
-    }
-
-    pub fn normalize_to_system(self, system_bounds: Bounds<Point>) -> Bounds<Point>
-    where
-        Point::Diff: ElementWise
-    {
-        Bounds{
-            min: system_bounds.normalize_point(self.min),
-            max: system_bounds.normalize_point(self.max)
-        }
-    }
 }
 
-impl<T> Containment for Bounds<Point2<T>>
+/// System bounds supporting conversions between local and global coordinates
+pub trait SystemBounds<PointGlobal, PointLocal> {
+    fn to_local(&self, global: Bounds<PointGlobal>) -> Bounds<PointLocal>;
+    fn to_global(&self, local: Bounds<PointLocal>) -> Bounds<PointGlobal>;
+}
+
+impl<PointGlobal, PointLocal> SystemBounds<PointGlobal, PointLocal> for Bounds<PointGlobal>
 where
-    T: cgmath::BaseNum
+    PointGlobal: EuclideanSpace<Scalar = f32>,
+    PointGlobal::Diff: Array<Element = f32>,
+    PointLocal: EuclideanSpace<Scalar = u32>,
+    PointLocal::Diff: Array<Element = u32>
 {
-    fn contains(self, other: Bounds<Point2<T>>) -> bool {
-        self.min.x <= other.min.x &&
-        self.min.y <= other.min.y &&
-        self.max.x >  other.max.x &&
-        self.max.y >  other.max.y
+    fn to_local(&self, global: Bounds<PointGlobal>) -> Bounds<PointLocal> {
+        let size = self.sizef();
+        let to_local = |global: PointGlobal, i| {
+            // MAX_VALUE has 24 bits set because IEEE floats have 23 explicit + 1 implicit fractional bits
+            const MIN_VALUE: f32 = std::u32::MIN as f32;
+            const MAX_VALUE: f32 = 0xffff_ff00u32 as f32;
+            const RANGE: f32 = MAX_VALUE - MIN_VALUE;
+            ((global[i] - self.min[i]) / size[i] * RANGE + MIN_VALUE) as u32
+        };
+        let mut local = Bounds::new(
+            PointLocal::from_vec(PointLocal::Diff::zero()),
+            PointLocal::from_vec(PointLocal::Diff::zero()));
+        init_arr(&mut local.min, |i| to_local(global.min, i));
+        init_arr(&mut local.max, |i| to_local(global.max, i));
+        local
+    }
+
+    fn to_global(&self, local: Bounds<PointLocal>) -> Bounds<PointGlobal> {
+        let size = self.sizef();
+        let to_global = |local: PointLocal, i| {
+            // MAX_VALUE has 24 bits set because IEEE floats have 23 explicit + 1 implicit fractional bits
+            const MIN_VALUE: f32 = std::u32::MIN as f32;
+            const MAX_VALUE: f32 = 0xffff_ff00u32 as f32;
+            const RANGE: f32 = MAX_VALUE - MIN_VALUE;
+            self.min[i] + (local[i] as f32 - MIN_VALUE) / RANGE * size[i]
+        };
+        let mut global = Bounds::new(
+            PointGlobal::from_vec(PointGlobal::Diff::zero()),
+            PointGlobal::from_vec(PointGlobal::Diff::zero()));
+        init_arr(&mut global.min, |i| to_global(local.min, i));
+        init_arr(&mut global.max, |i| to_global(local.max, i));
+        global
     }
 }
 
-impl<T> Containment for Bounds<Point3<T>>
-where
-    T: cgmath::BaseNum
-{
-    fn contains(self, other: Bounds<Point3<T>>) -> bool {
-        self.min.x <= other.min.x &&
-        self.min.y <= other.min.y &&
-        self.min.z <= other.min.z &&
-        self.max.x >  other.max.x &&
-        self.max.y >  other.max.y &&
-        self.max.z >  other.max.z
-    }
-}
-
-impl Quantize for Point2<f32> {
-    type Quantized = Point2<u32>;
-
-    fn quantize(self) -> Option<Self::Quantized> {
-        const MIN_VALUE: f32 = std::u32::MIN as f32;
-        const MAX_VALUE: f32 = (std::u32::MAX - 1u32) as f32;
-        const RANGE: f32 = MAX_VALUE - MIN_VALUE;
-        Point2::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
-    }
-}
-
-impl Quantize for Point3<f32> {
-    type Quantized = Point3<u32>;
-
-    fn quantize(self) -> Option<Self::Quantized> {
-        const MIN_VALUE: f32 = std::u32::MIN as f32;
-        const MAX_VALUE: f32 = (std::u32::MAX - 1u32) as f32;
-        const RANGE: f32 = MAX_VALUE - MIN_VALUE;
-        Point3::cast(&(self * RANGE).add_element_wise(MIN_VALUE))
-    }
-}
-
-impl<Point> Quantize for Bounds<Point>
-where
-    Point: Quantize,
-    Point::Quantized: ElementWise<u32>
-{
-    type Quantized = Bounds<Point::Quantized>;
-
-    fn quantize(self) -> Option<Self::Quantized> {
-        Some(Bounds{
-            min: self.min.quantize()?,
-            max: self.max.quantize()?.add_element_wise(1u32)
-        })
-    }
-}
-
-impl<Index> LevelIndexBounds<Index> for Bounds<Point3<u32>>
+impl<Index> IndexGenerator<Index> for Bounds<Point3<u32>>
 where
     Index: SpatialIndex<Diff = Vector3<u32>, Point = Point3<u32>>
 {
     type Output = SmallVec<[Index; 8]>;
 
     fn indices(self, min_depth: Option<u32>) -> Self::Output {
-        let max_axis = self.size().max_axis();
+        let max_axis = max_axis(self.sizei());
         let mut depth = (max_axis - 1u32).leading_zeros();
-        if let Some(min_depth_) = min_depth {
-            if depth < min_depth_ {
-                depth = min_depth_;
+        if let Some(min_depth) = min_depth {
+            if depth < min_depth {
+                depth = min_depth;
             }
         }
         depth = Index::clamp_depth(depth);
@@ -228,6 +233,21 @@ where
         }
 
         indices
+    }
+}
+
+impl<Index, Point> From<Index> for Bounds<Point>
+where
+    Index: SpatialIndex<Diff = Point::Diff, Point = Point>,
+    Point: EuclideanSpace<Scalar = u32> + ElementWise<u32>
+{
+    fn from(index: Index) -> Self {
+        let origin = index.origin();
+        let scale = scale_at_depth(index.depth());
+        Self{
+            min: origin,
+            max: origin.add_element_wise(scale-1)
+        }
     }
 }
 
@@ -326,10 +346,10 @@ where
 
         Self{
             cell_bounds: system_bounds,
-            origin     : origin,
-            direction  : direction,
-            range_min  : range_min,
-            range_max  : range_max}
+            origin,
+            direction,
+            range_min,
+            range_max}
     }
 }
 
@@ -350,8 +370,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
             self.clone(),
             self.clone()
         ];
-        for cell in 0..8 {
-            let result = &mut results[cell];
+        for (cell, result) in results.iter_mut().enumerate() {
             let range_min = &mut result.range_min;
             let range_max = &mut result.range_max;
             for axis in 0..3 {
@@ -369,6 +388,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
                 }
             }
             let bounds = &mut result.cell_bounds;
+            #[allow(clippy::needless_range_loop)]
             for axis in 0..3 {
                 let side = cell & (1 << axis) != 0;
                 if side {
@@ -383,6 +403,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
 
     fn test_order(&self) -> Self::TestOrder {
         let abs = self.direction.map(|x| x.abs());
+        #[allow(clippy::collapsible_if)]
         let axes = if abs.x <= abs.y && abs.x <= abs.z {
             if abs.y <= abs.z { [0, 1, 2] } else { [0, 2, 1] }
         } else if abs.y <= abs.z {
@@ -392,11 +413,11 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
         };
 
         let mut order: [usize; 8] = [0; 8];
-        for i in 0..8 {
-            let i0 = (i & 1 != 0) == (self.direction[axes[0]] >= 0f32);
-            let i1 = (i & 2 != 0) == (self.direction[axes[1]] >= 0f32);
-            let i2 = (i & 4 != 0) == (self.direction[axes[2]] >= 0f32);
-            order[i] =
+        for (cell_src, cell_dst) in order.iter_mut().enumerate() {
+            let i0 = (cell_src & 1 != 0) == (self.direction[axes[0]] >= 0f32);
+            let i1 = (cell_src & 2 != 0) == (self.direction[axes[1]] >= 0f32);
+            let i2 = (cell_src & 4 != 0) == (self.direction[axes[2]] >= 0f32);
+            *cell_dst =
                 ((i0 as usize) << axes[0]) |
                 ((i1 as usize) << axes[1]) |
                 ((i2 as usize) << axes[2])
@@ -406,7 +427,7 @@ impl TestGeometry for RayTestGeometry<Point3<f32>> {
     }
 
     fn should_test(&self, nearest: f32) -> bool {
-        return self.range_min < self.range_max && self.range_min < nearest;
+        self.range_min < self.range_max && self.range_min < nearest
     }
 }
 
@@ -415,16 +436,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn normalize_to_system() {
+    fn system_bounds() {
         let system_bounds = Bounds{
             min: Point3::new(-64f32, -64f32, -64f32),
             max: Point3::new( 64f32,  64f32,  64f32)};
-        let bounds = Bounds{
+        let global = Bounds{
             min: Point3::new(-32f32, -32f32, -32f32),
             max: Point3::new( 32f32,  32f32,  32f32)};
-        let expected = Bounds{
-            min: Point3::new(0.25f32, 0.25f32, 0.25f32),
-            max: Point3::new(0.75f32, 0.75f32, 0.75f32)};
-        assert_eq!(bounds.normalize_to_system(system_bounds), expected);
+        let local: Bounds<Point3<u32>> = system_bounds.to_local(global);
+        let expected = global;
+        let actual = system_bounds.to_global(local);
+        assert_eq!(actual, expected);
     }
 }
