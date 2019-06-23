@@ -22,6 +22,7 @@ where
     Arr: Array,
     F: FnMut(usize) -> Arr::Element
 {
+    #[allow(clippy::needless_range_loop)]
     for i in 0..Arr::len() {
         arr[i] = f(i);
     }

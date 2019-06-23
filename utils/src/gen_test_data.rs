@@ -231,8 +231,8 @@ impl Command for ShowBoxes {
             }
 
             impl Selection {
-                fn cycle(&mut self, ids: &Vec<ID>, offset: i32) {
-                    let mut id = if let &mut Selection::ID(id) = self { id } else { 0 };
+                fn cycle(&mut self, ids: &[ID], offset: i32) {
+                    let mut id = if let Selection::ID(id) = *self { id } else { 0 };
                     let mut i = ids.binary_search(&id).unwrap();
                     let n = ids.len();
                     if offset < 0 {
@@ -420,7 +420,10 @@ impl Command for ShowBoxes {
                 view_proj: [[f32; 4]; 4]
             }
 
-            implement_uniform_block!(Transforms, view_proj);
+            #[warn(clippy::invalid_ref)]
+            {
+                implement_uniform_block!(Transforms, view_proj);
+            }
 
             let mut transforms = Transforms{ view_proj: [[0f32; 4]; 4] };
             let transforms_ubo = glium::uniforms::UniformBuffer::<Transforms>::empty_persistent(&display).unwrap();

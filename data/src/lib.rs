@@ -61,14 +61,14 @@ pub enum SceneIOError {
 impl Scene {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Scene, SceneIOError> {
         let f = File::open(path)
-            .map_err(|err| SceneIOError::IOError(err))?;
+            .map_err(SceneIOError::IOError)?;
 
         Self::parse(&f)
     }
 
     pub fn parse<IO: Read>(mut io: IO) -> Result<Scene, SceneIOError> {
         let header: Header = bincode::deserialize_from(io.by_ref())
-            .map_err(|err| SceneIOError::BincodeError(err))?;
+            .map_err(SceneIOError::BincodeError)?;
 
         if header.signature != FORMAT_SIGNATURE {
             return Err(SceneIOError::InvalidSignature(header.signature));
@@ -78,17 +78,18 @@ impl Scene {
             return Err(SceneIOError::UnsupportedVersion(header.version));
         }
 
+        #[allow(clippy::identity_conversion)]
         match header.version.1 {
             0 => bincode::deserialize_from::<_, SceneV1_0>(io).map(|scene| scene.into()),
             1 => bincode::deserialize_from::<_, SceneV1_1>(io).map(|scene| scene.into()),
             2 => bincode::deserialize_from::<_, SceneV1_2>(io).map(|scene| scene.into()),
             _ => panic!()
-        }.map_err(|err| SceneIOError::BincodeError(err))
+        }.map_err(SceneIOError::BincodeError)
     }
 
     pub fn save<P: AsRef<Path>>(&self, path: P) -> Result<(), SceneIOError> {
         let f = File::create(path)
-            .map_err(|err| SceneIOError::IOError(err))?;
+            .map_err(SceneIOError::IOError)?;
 
         self.assemble(&f)
     }
@@ -97,10 +98,10 @@ impl Scene {
         bincode::serialize_into(io.by_ref(), &Header{
             signature: FORMAT_SIGNATURE,
             version: FORMAT_VERSION
-        }).map_err(|err| SceneIOError::BincodeError(err))?;
+        }).map_err(SceneIOError::BincodeError)?;
 
         bincode::serialize_into(io, self)
-            .map_err(|err| SceneIOError::BincodeError(err))
+            .map_err(SceneIOError::BincodeError)
     }
 }
 
