@@ -1,6 +1,6 @@
 // mlodato, 20190317
 
-use super::index::SpatialIndex;
+use crate::index::SpatialIndex;
 
 use cgmath::{Point3, Vector3};
 use cgmath::prelude::*;

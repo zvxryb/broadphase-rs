@@ -3,6 +3,7 @@ name = "broadphase_utils"
 publish = false
 version = "0.1.0"
 authors = ["Michael Lodato <zvxryb@gmail.com>"]
+edition = "2018"
 
 [dependencies]
 broadphase = {path=".."}

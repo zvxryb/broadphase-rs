@@ -1,8 +1,8 @@
 // mlodato, 20190318
 
-use super::geom::{Bounds, IndexGenerator, RayTestGeometry, SystemBounds, TestGeometry};
-use super::index::SpatialIndex;
-use super::traits::ObjectID;
+use crate::geom::{Bounds, IndexGenerator, RayTestGeometry, SystemBounds, TestGeometry};
+use crate::index::SpatialIndex;
+use crate::traits::ObjectID;
 
 use cgmath::prelude::*;
 use rustc_hash::FxHashSet;

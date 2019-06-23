@@ -30,13 +30,13 @@ pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
     type Point: Copy + EuclideanSpace<Diff = Self::Diff, Scalar = u32>;
 
     /// clamps a depth value to the representable range
-    fn clamp_depth(u32) -> u32;
+    fn clamp_depth(_: u32) -> u32;
 
     fn origin(self) -> Self::Point;
     fn depth(self) -> u32;
 
-    fn set_origin(self, Self::Point) -> Self;
-    fn set_depth(self, u32) -> Self;
+    fn set_origin(self, _: Self::Point) -> Self;
+    fn set_depth(self, _: u32) -> Self;
 
     type SubdivideResult: AsRef<[Self]>;
 

@@ -11,8 +11,8 @@ extern crate clap;
 #[macro_use]
 extern crate glium;
 
-use broadphase::{Bounds, Layer};
-use broadphase_data::{Index, ID, Scene};
+use broadphase::Bounds;
+use broadphase_data::{ID, Scene};
 use cgmath::{Deg, Matrix4, Point3, Quaternion, Rad, Vector3};
 use glium::glutin;
 
@@ -585,7 +585,7 @@ impl Command for ShowBoxes {
             while running {
                 let mut redraw = false;
                 events_loop.poll_events(|event| {
-                    use glutin::{DeviceEvent, Event, WindowEvent};
+                    use crate::glutin::{DeviceEvent, Event, WindowEvent};
                     match event {
                         Event::DeviceEvent{event, ..} => {
                             match event {
