@@ -1,6 +1,12 @@
-// mlodato, 20190318
+// mlodato, 20190806
 
-use crate::geom::{Bounds, IndexGenerator, RayTestGeometry, SystemBounds, TestGeometry};
+use crate::geom::{
+    Bounds,
+    BoxTestGeometry,
+    IndexGenerator,
+    RayTestGeometry,
+    SystemBounds,
+    TestGeometry};
 use crate::index::SpatialIndex;
 use crate::traits::ObjectID;
 
@@ -270,6 +276,39 @@ where
         results.dedup();
 
         results
+    }
+
+    /// A special case of [`test`] for bounding box tests, see [`BoxTestGeometry`]
+    /// 
+    /// The `system_bounds` provided to this method should, in most cases, be identical to the
+    /// `system_bounds` provided to [`extend`]
+    /// 
+    /// _note: this method may do an implicit, non-parallel sort; you may call [`par_sort`] prior
+    /// to calling this method to perform a parallel sort instead_
+    /// 
+    /// [`test`]: #method.test
+    /// [`extend`]: #method.extend
+    /// [`par_sort`]: #method.par_sort
+    /// [`BoxTestGeometry`]: struct.BoxTestGeometry.html
+    pub fn test_box<'a, Point_>(
+        &'a mut self,
+        system_bounds: Bounds<Point_>,
+        test_bounds: Bounds<Point_>,
+        max_depth: Option<u32>) -> &'a Vec<ID>
+    where
+        Point_: EuclideanSpace<Scalar = f32> + Debug,
+        Point_::Diff: ElementWise + std::ops::Index<usize, Output = f32> + Debug,
+        BoxTestGeometry<Point_>: TestGeometry
+    {
+        let test_geom = BoxTestGeometry::with_system_bounds(
+            system_bounds,
+            test_bounds);
+
+        self.test(
+            &test_geom,
+            max_depth);
+
+        &self.test_results
     }
 
     /// A special case of [`test`] for ray-testing, see [`RayTestGeometry`]

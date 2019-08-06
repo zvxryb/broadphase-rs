@@ -1,4 +1,4 @@
-// mlodato, 20190317
+// mlodato, 20190806
 
 use crate::index::SpatialIndex;
 
@@ -278,6 +278,76 @@ pub trait TestGeometry: Sized + Debug {
     /// 
     /// `nearest` may be `std::f32::INFINITY`
     fn should_test(&self, nearest: f32) -> bool;
+}
+
+/// [`TestGeometry`]: trait.TestGeometry.html
+/// A type implementing [`TestGeometry`] for bounding boxes
+#[derive(Clone, Debug)]
+pub struct BoxTestGeometry<Point>
+where
+    Point: EuclideanSpace<Scalar = f32>
+{
+    cell_bounds: Bounds<Point>,
+    test_bounds: Bounds<Point>,
+}
+
+impl<Point> BoxTestGeometry<Point>
+where
+    Point: EuclideanSpace<Scalar = f32>
+{
+    /// Construct box test geometry
+    pub fn with_system_bounds(
+        system_bounds: Bounds<Point>,
+        test_bounds: Bounds<Point>,) -> Self
+    where
+        Point: Debug,
+        Point::Diff: ElementWise + std::ops::Index<usize, Output = f32> + Debug,
+    {
+        Self{
+            cell_bounds: system_bounds,
+            test_bounds}
+    }
+}
+
+impl TestGeometry for BoxTestGeometry<Point3<f32>> {
+    type SubdivideResult = [Self; 8];
+    type TestOrder = [usize; 8];
+
+    fn subdivide(&self) -> Self::SubdivideResult {
+        let center = self.cell_bounds.center();
+        let mut results: [Self; 8] = [
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone()
+        ];
+        for (cell, result) in results.iter_mut().enumerate() {
+            let bounds = &mut result.cell_bounds;
+            #[allow(clippy::needless_range_loop)]
+            for axis in 0..3 {
+                let side = cell & (1 << axis) != 0;
+                if side {
+                    bounds.min[axis] = center[axis];
+                } else {
+                    bounds.max[axis] = center[axis];
+                }
+            }
+        }
+        results
+    }
+
+    fn test_order(&self) -> Self::TestOrder {
+        [0, 1, 2, 3, 4, 5, 6, 7]
+    }
+
+    fn should_test(&self, nearest: f32) -> bool {
+        debug_assert!(!nearest.is_finite(), "BoxTestGeometry does not support \"pick\" operations");
+        self.cell_bounds.overlaps(self.test_bounds)
+    }
 }
 
 /// [`TestGeometry`]: trait.TestGeometry.html
