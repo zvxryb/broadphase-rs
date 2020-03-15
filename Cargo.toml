@@ -1,5 +1,6 @@
 [package]
 name = "zvxryb-broadphase"
+publish = ["crates-io"]
 version = "0.1.0"
 authors = ["Michael Lodato <zvxryb@gmail.com>"]
 edition = "2018"
