@@ -27,7 +27,7 @@ use std::cell::{RefMut, RefCell};
 use thread_local::CachedThreadLocal;
 
 /// [`SpatialIndex`]: trait.SpatialIndex.html
-/// [`Index64_3D`]: trait.Index64_3D.html
+/// [`Index64_3D`]: struct.Index64_3D.html
 
 /// A group of collision data
 /// 
