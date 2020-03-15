@@ -14,7 +14,7 @@ use specs::prelude::*;
 use broadphase::Bounds;
 use cgmath::{Point2, Point3, Vector2, Vector3};
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System as SystemAlloc};
-use std::sync::atomic::{AtomicUsize, ATOMIC_USIZE_INIT, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 struct AllocLogger {
@@ -42,7 +42,7 @@ unsafe impl GlobalAlloc for AllocLogger {
 
 #[global_allocator]
 static ALLOCATOR: AllocLogger = AllocLogger{
-    count: ATOMIC_USIZE_INIT};
+    count: AtomicUsize::new(0)};
 
 struct Time {
     current: Duration,
@@ -75,7 +75,6 @@ impl Default for CollisionSystemConfig {
 
 impl CollisionSystemConfig {
     fn from_screen_coords(rect: ggez::graphics::Rect) -> Self {
-        use cgmath::ElementWise;
         let scale = if rect.w > rect.h { rect.w } else { rect.h };
         let min = Point3::new(rect.x, rect.y, 0f32);
         let max = min.add_element_wise(scale);
@@ -438,10 +437,10 @@ impl ggez::event::EventHandler for GameState {
             Duration::from_micros(Self::FRAME_TIME_US as u64);
         while ggez::timer::check_update_time(context, Self::FRAME_RATE) {
             self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
-            self.lifecycle.run_now(&self.world.res);
+            self.lifecycle.run_now(&self.world);
             self.world.maintain();
-            self.kinematics.run_now(&self.world.res);
-            self.collisions.run_now(&self.world.res);
+            self.kinematics.run_now(&self.world);
+            self.collisions.run_now(&self.world);
         }
         Ok(())
     }
@@ -534,10 +533,10 @@ fn main() {
 
     let mut state = GameState::new();
     let screen_rect = ggez::graphics::screen_coordinates(&context);
-    state.world.add_resource(Time::default());
-    state.world.add_resource(ScreenCoords(screen_rect));
-    state.world.add_resource(CollisionSystemConfig::from_screen_coords(screen_rect));
-    state.world.add_resource(BallCount(0));
+    state.world.insert(Time::default());
+    state.world.insert(ScreenCoords(screen_rect));
+    state.world.insert(CollisionSystemConfig::from_screen_coords(screen_rect));
+    state.world.insert(BallCount(0));
     state.world.register::<Lifetime>();
     state.world.register::<VerletPosition>();
     state.world.register::<Radius>();

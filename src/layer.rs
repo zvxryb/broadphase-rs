@@ -133,7 +133,6 @@ where
 
         lhs_tree.extend(rhs_tree.iter());
         *sorted = false;
-        return;
     }
 
     /// [`par_scan_filtered`]: struct.Layer.html#method.par_scan_filtered
@@ -230,10 +229,10 @@ where
 
             nearest
         } else {
-            return tree.iter()
+            tree.iter()
                 .map(|(_, id)| *id)
                 .fold(nearest, |nearest, id|
-                    callback(test_geom, nearest, id).min(nearest));
+                    callback(test_geom, nearest, id).min(nearest))
         }
     }
 
@@ -526,7 +525,7 @@ where
     {
         const SPLIT_THRESHOLD: usize = 64;
         if threads <= 1 || tree.len() <= SPLIT_THRESHOLD {
-            let collisions = self.collisions_tls.get_or(|| Box::new(RefCell::new(Vec::new())));
+            let collisions = self.collisions_tls.get_or(|| RefCell::new(Vec::new()));
             Self::scan_impl(tree, collisions.borrow_mut(), filter);
         } else {
             let n = tree.len();

@@ -212,8 +212,8 @@ impl Command for ShowBoxes {
         };
 
         if args.is_present("gui") {
-            let mut events_loop = glutin::EventsLoop::new();
-            let window_builder = glutin::WindowBuilder::new()
+            let events_loop = glutin::event_loop::EventLoop::new();
+            let window_builder = glutin::window::WindowBuilder::new()
                 .with_title("Broadphase Util: Show Boxes")
                 .with_resizable(true);
             let context = glutin::ContextBuilder::new()
@@ -260,7 +260,10 @@ impl Command for ShowBoxes {
                     position: [f32; 3]
                 }
 
-                implement_vertex!(Vertex, position);
+                #[allow(clippy::unneeded_field_pattern)]
+                {
+                    implement_vertex!(Vertex, position);
+                }
 
                 glium::VertexBuffer::immutable(&display, &[
                     Vertex{ position: [0f32, 0f32, 0f32] }, Vertex{ position: [1f32, 0f32, 0f32] },
@@ -285,7 +288,10 @@ impl Command for ShowBoxes {
                     normal  : [f32; 3]
                 }
 
-                implement_vertex!(Vertex, position, normal);
+                #[allow(clippy::unneeded_field_pattern)]
+                {
+                    implement_vertex!(Vertex, position, normal);
+                }
 
                 glium::VertexBuffer::immutable(&display, &[
                     Vertex{ position: [0f32, 0f32, 0f32], normal: [ 0f32,  0f32, -1f32] }, Vertex{ position: [0f32, 1f32, 0f32], normal: [ 0f32,  0f32, -1f32] }, Vertex{ position: [1f32, 1f32, 0f32], normal: [ 0f32,  0f32, -1f32] },
@@ -310,7 +316,11 @@ impl Command for ShowBoxes {
                 fill_color: [f32; 4],
                 edge_color: [f32; 4]
             }
-            implement_vertex!(InstanceData, aabb_min, aabb_max, fill_color, edge_color);
+
+            #[allow(clippy::unneeded_field_pattern)]
+            {
+                implement_vertex!(InstanceData, aabb_min, aabb_max, fill_color, edge_color);
+            }
 
             struct InstanceBuffer {
                 vbo: glium::VertexBuffer<InstanceData>,
@@ -420,7 +430,7 @@ impl Command for ShowBoxes {
                 view_proj: [[f32; 4]; 4]
             }
 
-            #[warn(clippy::invalid_ref)]
+            #[allow(clippy::unneeded_field_pattern)]
             {
                 implement_uniform_block!(Transforms, view_proj);
             }
@@ -518,7 +528,7 @@ impl Command for ShowBoxes {
                 None)
                 .expect("failed to compile shader");
 
-            let mut draw = |display: &glium::Display, camera: &Camera, instance_buffer: &InstanceBuffer| {
+            let mut draw = move |display: &glium::Display, camera: &Camera, instance_buffer: &InstanceBuffer| {
 
                 let rot: Matrix4<f32> = camera.orientation.invert().into();
                 let offs = Matrix4::from_translation(Point3::new(0f32, 0f32, 0f32) - camera.position);
@@ -578,131 +588,130 @@ impl Command for ShowBoxes {
                 frame.finish().unwrap();
             };
 
-            let mut running = true;
             let mut time = std::time::Instant::now();
-            let mut mouse_grab: Option<glutin::MouseButton> = None;
+            let mut mouse_grab: Option<glutin::event::MouseButton> = None;
             let mut move_forward = false;
             let mut move_back = false;
             let mut move_left = false;
             let mut move_right = false;
-            while running {
-                let mut redraw = false;
-                events_loop.poll_events(|event| {
-                    use crate::glutin::{DeviceEvent, Event, WindowEvent};
-                    match event {
-                        Event::DeviceEvent{event, ..} => {
-                            match event {
-                                DeviceEvent::Key(glutin::KeyboardInput{state, virtual_keycode, ..}) =>
-                                    match virtual_keycode {
-                                        Some(glutin::VirtualKeyCode::LBracket) |
-                                        Some(glutin::VirtualKeyCode::RBracket) =>
-                                            if state == glutin::ElementState::Pressed {
-                                                let offset = match virtual_keycode {
-                                                    Some(glutin::VirtualKeyCode::LBracket) => -1,
-                                                    Some(glutin::VirtualKeyCode::RBracket) =>  1,
-                                                    _ => panic!()
-                                                };
-                                                selection.cycle(&ids, offset);
-                                                update_instance_data(&display, &mut box_instances_buffer, &scene, selection);
-                                                redraw = true;
-                                            }
-                                        Some(glutin::VirtualKeyCode::Space) =>
-                                            if state == glutin::ElementState::Pressed {
-                                                selection = match selection {
-                                                    Selection::All => Selection::None,
-                                                    _ => Selection::All
-                                                };
-                                                update_instance_data(&display, &mut box_instances_buffer, &scene, selection);
-                                                redraw = true;
-                                            }
-                                        Some(glutin::VirtualKeyCode::W) |
-                                        Some(glutin::VirtualKeyCode::A) |
-                                        Some(glutin::VirtualKeyCode::S) |
-                                        Some(glutin::VirtualKeyCode::D) => {
-                                            let move_dir = match virtual_keycode {
-                                                Some(glutin::VirtualKeyCode::W) => &mut move_forward,
-                                                Some(glutin::VirtualKeyCode::A) => &mut move_left,
-                                                Some(glutin::VirtualKeyCode::S) => &mut move_back,
-                                                Some(glutin::VirtualKeyCode::D) => &mut move_right,
+            events_loop.run(move |event, _window_target, control| {
+                use crate::glutin::event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent};
+                match event {
+                    Event::DeviceEvent{event, ..} => {
+                        match event {
+                            DeviceEvent::Key(glutin::event::KeyboardInput{state, virtual_keycode, ..}) =>
+                                match virtual_keycode {
+                                    Some(VirtualKeyCode::LBracket) |
+                                    Some(VirtualKeyCode::RBracket) =>
+                                        if state == ElementState::Pressed {
+                                            let offset = match virtual_keycode {
+                                                Some(VirtualKeyCode::LBracket) => -1,
+                                                Some(VirtualKeyCode::RBracket) =>  1,
                                                 _ => panic!()
                                             };
-                                            *move_dir = state == glutin::ElementState::Pressed;
+                                            selection.cycle(&ids, offset);
+                                            update_instance_data(&display, &mut box_instances_buffer, &scene, selection);
+                                            display.gl_window().window().request_redraw();
                                         }
-                                        _ => {}
-                                    }
-                                DeviceEvent::MouseMotion{delta: (dx, dy)} =>
-                                    if mouse_grab.is_some() {
-                                        const DEG_PER_PX: f32 = 0.2;
-                                        let rot_x = -(dy as f32) * DEG_PER_PX / 180f32;
-                                        let rot_y = -(dx as f32) * DEG_PER_PX / 180f32;
-                                        let rot_w = 1f32 - (rot_x.powi(2) + rot_y.powi(2)).sqrt();
-                                        camera.orientation = (camera.orientation * Quaternion::new(rot_w, rot_x, rot_y, 0f32)).normalize();
-                                        redraw = true;
-                                    }
-                                _ => {}
-                            }
-                        }
-                        Event::WindowEvent{event, ..} => {
-                            match event {
-                                WindowEvent::CloseRequested => {
-                                    running = false
-                                }
-                                WindowEvent::MouseInput{state, button, ..} => {
-                                    if mouse_grab.map_or(true, |b| b == button) {
-                                        let is_pressed = match state {
-                                            glutin::ElementState::Pressed => true,
-                                            glutin::ElementState::Released => false
+                                    Some(VirtualKeyCode::Space) =>
+                                        if state == ElementState::Pressed {
+                                            selection = match selection {
+                                                Selection::All => Selection::None,
+                                                _ => Selection::All
+                                            };
+                                            update_instance_data(&display, &mut box_instances_buffer, &scene, selection);
+                                            display.gl_window().window().request_redraw();
+                                        }
+                                    Some(VirtualKeyCode::W) |
+                                    Some(VirtualKeyCode::A) |
+                                    Some(VirtualKeyCode::S) |
+                                    Some(VirtualKeyCode::D) => {
+                                        let move_dir = match virtual_keycode {
+                                            Some(VirtualKeyCode::W) => &mut move_forward,
+                                            Some(VirtualKeyCode::A) => &mut move_left,
+                                            Some(VirtualKeyCode::S) => &mut move_back,
+                                            Some(VirtualKeyCode::D) => &mut move_right,
+                                            _ => panic!()
                                         };
-                                        if mouse_grab.is_some() != is_pressed {
-                                            let window = display.gl_window();
-                                            window.grab_cursor(is_pressed).unwrap();
-                                            window.hide_cursor(is_pressed);
-                                        }
-                                        mouse_grab = if is_pressed { Some(button) } else { None };
+                                        *move_dir = state == ElementState::Pressed;
                                     }
+                                    _ => {}
                                 }
-                                WindowEvent::Resized(size) => {
-                                    camera.aspect_ratio = (size.width / size.height) as f32;
-                                    redraw = true;
+                            DeviceEvent::MouseMotion{delta: (dx, dy)} =>
+                                if mouse_grab.is_some() {
+                                    const DEG_PER_PX: f32 = 0.2;
+                                    let rot_x = -(dy as f32) * DEG_PER_PX / 180f32;
+                                    let rot_y = -(dx as f32) * DEG_PER_PX / 180f32;
+                                    let rot_w = 1f32 - (rot_x.powi(2) + rot_y.powi(2)).sqrt();
+                                    camera.orientation = (camera.orientation * Quaternion::new(rot_w, rot_x, rot_y, 0f32)).normalize();
+                                    display.gl_window().window().request_redraw();
                                 }
-                                _ => {}
-                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
-                });
+                    Event::WindowEvent{event, ..} => {
+                        match event {
+                            WindowEvent::CloseRequested => {
+                                *control = glutin::event_loop::ControlFlow::Exit;
+                            }
+                            WindowEvent::MouseInput{state, button, ..} => {
+                                if mouse_grab.map_or(true, |b| b == button) {
+                                    let is_pressed = match state {
+                                        ElementState::Pressed => true,
+                                        ElementState::Released => false
+                                    };
+                                    if mouse_grab.is_some() != is_pressed {
+                                        display.gl_window().window().set_cursor_grab(is_pressed).unwrap();
+                                        display.gl_window().window().set_cursor_visible(!is_pressed);
+                                    }
+                                    mouse_grab = if is_pressed { Some(button) } else { None };
+                                }
+                            }
+                            WindowEvent::Resized(size) => {
+                                camera.aspect_ratio = (size.width / size.height) as f32;
+                                display.gl_window().window().request_redraw();
+                            }
+                            _ => {}
+                        }
+                    }
+                    Event::MainEventsCleared => {
+                        const MAX_FPS: i32 = 200;
+                        const MIN_DURATION_NS: i32 = 1_000_000_000 / MAX_FPS;
+                        let remaining_duration_ns = MIN_DURATION_NS - (time.elapsed().subsec_nanos() as i32);
+                        if remaining_duration_ns > 0 {
+                            std::thread::sleep(std::time::Duration::from_nanos(remaining_duration_ns as u64));
+                        }
 
-                const MAX_FPS: i32 = 200;
-                const MIN_DURATION_NS: i32 = 1_000_000_000 / MAX_FPS;
-                let remaining_duration_ns = MIN_DURATION_NS - (time.elapsed().subsec_nanos() as i32);
-                if remaining_duration_ns > 0 {
-                    std::thread::sleep(std::time::Duration::from_nanos(remaining_duration_ns as u64));
+                        *control = if move_forward || move_back || move_left || move_right {
+                            const SPEED: f32 = 0.1f32;
+
+                            let mut move_local = Vector3::new(0f32, 0f32, 0f32);
+                            if move_forward { move_local += Vector3::new( 0f32, 0f32, -1f32); }
+                            if move_back    { move_local += Vector3::new( 0f32, 0f32,  1f32); }
+                            if move_left    { move_local += Vector3::new(-1f32, 0f32,  0f32); }
+                            if move_right   { move_local += Vector3::new( 1f32, 0f32,  0f32); }
+
+                            move_local *= (time.elapsed().subsec_nanos() as f32 / 1_000_000_000f32)
+                                * SPEED * scene.system_bounds.sizef().magnitude();
+
+                            let move_global = camera.orientation.rotate_vector(move_local);
+                            camera.position += move_global;
+
+                            display.gl_window().window().request_redraw();
+
+                            glutin::event_loop::ControlFlow::Poll
+                        } else {
+                            glutin::event_loop::ControlFlow::Wait
+                        };
+
+                        time = std::time::Instant::now();
+                    }
+                    Event::RedrawRequested(..) => {
+                        draw(&display, &camera, &box_instances_buffer);
+                    }
+                    _ => {}
                 }
-
-                if move_forward || move_back || move_left || move_right {
-                    const SPEED: f32 = 0.1f32;
-
-                    let mut move_local = Vector3::new(0f32, 0f32, 0f32);
-                    if move_forward { move_local += Vector3::new( 0f32, 0f32, -1f32); }
-                    if move_back    { move_local += Vector3::new( 0f32, 0f32,  1f32); }
-                    if move_left    { move_local += Vector3::new(-1f32, 0f32,  0f32); }
-                    if move_right   { move_local += Vector3::new( 1f32, 0f32,  0f32); }
-
-                    move_local *= (time.elapsed().subsec_nanos() as f32 / 1_000_000_000f32)
-                        * SPEED * scene.system_bounds.sizef().magnitude();
-
-                    let move_global = camera.orientation.rotate_vector(move_local);
-                    camera.position += move_global;
-
-                    redraw = true;
-                }
-
-                time = std::time::Instant::now();
-
-                if redraw {
-                    draw(&display, &camera, &box_instances_buffer);
-                }
-            }
+            });
         } else {
             println!("system_bounds: {:?}", scene.system_bounds);
             println!("object_bounds:");

@@ -10,9 +10,9 @@ broadphase = {path=".."}
 broadphase_data = {path="../data"}
 cgmath = "^0.17.0"
 clap = "^2.31.2"
-glium = "^0.23.0"
-rand = "^0.6.4"
-rand_chacha = "^0.1.1"
+glium = "^0.26.0"
+rand = "^0.7.0"
+rand_chacha = "^0.2.0"
 
 [[bin]]
 name = "gen_test_data"
