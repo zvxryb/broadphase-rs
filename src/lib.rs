@@ -22,7 +22,7 @@
 //! The usual sequence of operations on a [`Layer`] is as follows:
 //! 
 //! ```rust
-//! extern crate broadphase;
+//! extern crate zvxryb_broadphase as broadphase;
 //! # extern crate cgmath;
 //! 
 //! use broadphase::{Bounds, Layer, LayerBuilder, Index64_3D};

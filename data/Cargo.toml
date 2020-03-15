@@ -6,7 +6,7 @@ authors = ["Michael Lodato <zvxryb@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-broadphase = {path="..", features=["serde"]}
+zvxryb-broadphase = {path="..", features=["serde"]}
 bincode = "^1.1.2"
 cgmath = {version="^0.17.0", features=["serde"]}
 serde = {version="^1.0.89", features=["derive"]}

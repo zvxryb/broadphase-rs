@@ -1,6 +1,5 @@
 [package]
-name = "broadphase"
-publish = false
+name = "zvxryb-broadphase"
 version = "0.1.0"
 authors = ["Michael Lodato <zvxryb@gmail.com>"]
 edition = "2018"

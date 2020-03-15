@@ -1,4 +1,4 @@
-extern crate broadphase;
+extern crate zvxryb_broadphase as broadphase;
 extern crate broadphase_data;
 
 extern crate cgmath;

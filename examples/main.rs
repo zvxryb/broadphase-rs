@@ -1,6 +1,6 @@
 // mlodato, 20190318
 
-extern crate broadphase;
+extern crate zvxryb_broadphase as broadphase;
 extern crate cgmath;
 extern crate env_logger;
 extern crate ggez;

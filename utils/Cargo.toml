@@ -6,7 +6,7 @@ authors = ["Michael Lodato <zvxryb@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-broadphase = {path=".."}
+zvxryb-broadphase = {path=".."}
 broadphase_data = {path="../data"}
 cgmath = "^0.17.0"
 clap = "^2.31.2"
