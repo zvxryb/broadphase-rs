@@ -185,9 +185,9 @@ impl<'a> specs::System<'a> for Lifecycle {
             }
         }
 
-        const BALL_COUNT_MAX: u32 = 5000;
-        const LIFETIME_MIN_MS: u32 = 5000;
-        const LIFETIME_MAX_MS: u32 = 30000;
+        const BALL_COUNT_MAX: u32 = 2500;
+        const LIFETIME_MIN_MS: u32 = 10000;
+        const LIFETIME_MAX_MS: u32 = 50000;
         for _ in 0..BALL_COUNT_MAX*time.delta.subsec_millis()/LIFETIME_MIN_MS {
             if ball_count.0 >= BALL_COUNT_MAX {
                 break;
@@ -435,12 +435,16 @@ impl ggez::event::EventHandler for GameState {
 
         self.world.write_resource::<Time>().delta =
             Duration::from_micros(Self::FRAME_TIME_US as u64);
+        let mut i = 0;
         while ggez::timer::check_update_time(context, Self::FRAME_RATE) {
-            self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
-            self.lifecycle.run_now(&self.world);
-            self.world.maintain();
-            self.kinematics.run_now(&self.world);
-            self.collisions.run_now(&self.world);
+            if i < 10 {
+                self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
+                self.lifecycle.run_now(&self.world);
+                self.world.maintain();
+                self.kinematics.run_now(&self.world);
+                self.collisions.run_now(&self.world);
+            }
+            i += 1;
         }
         Ok(())
     }
@@ -518,6 +522,9 @@ impl ggez::event::EventHandler for GameState {
 
 fn main() {
     env_logger::init();
+
+    #[cfg(debug_assertions)]
+    println!("Example should be run in RELEASE MODE for optimal performance!");
 
     use ggez::conf::*;
     let (mut context, mut event_loop) = ggez::ContextBuilder::new("broadphase_demo", "zvxryb")
