@@ -3,9 +3,13 @@
 extern crate zvxryb_broadphase as broadphase;
 extern crate cgmath;
 extern crate env_logger;
-extern crate ggez;
 extern crate rand;
 extern crate specs;
+
+#[macro_use]
+extern crate glium;
+
+use glium::glutin;
 
 use cgmath::prelude::*;
 use rand::prelude::*;
@@ -31,8 +35,7 @@ unsafe impl GlobalAlloc for AllocLogger {
     #[inline(never)]
     unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
         self.count.fetch_add(1, AtomicOrdering::Relaxed);
-        let result = SystemAlloc.alloc(layout);
-        result
+        SystemAlloc.alloc(layout)
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: AllocLayout) {
@@ -45,15 +48,40 @@ static ALLOCATOR: AllocLogger = AllocLogger{
     count: AtomicUsize::new(0)};
 
 struct Time {
-    current: Duration,
-    delta: Duration,
+    real: Instant,
+    sim : Duration,
+    draw: Duration,
+    step: Duration,
+}
+
+impl Time {
+    fn update(&mut self, step: Duration, max_delta: Duration) {
+        let now   = Instant::now();
+        let delta = now - self.real;
+        self.real = now;
+        self.draw += std::cmp::min(delta, max_delta);
+        self.step = step;
+    }
+
+    fn step(&mut self) -> bool {
+        if self.sim + self.step <= self.draw {
+            self.sim += self.step;
+            true
+        } else { false }
+    }
+
+    fn remainder(&self) -> Duration {
+        self.draw - self.sim
+    }
 }
 
 impl Default for Time {
     fn default() -> Self {
         Self {
-            current: Duration::default(),
-            delta: Duration::default(),
+            real: Instant::now(),
+            sim : Default::default(),
+            draw: Default::default(),
+            step: Default::default(),
         }
     }
 }
@@ -74,21 +102,42 @@ impl Default for CollisionSystemConfig {
 }
 
 impl CollisionSystemConfig {
-    fn from_screen_coords(rect: ggez::graphics::Rect) -> Self {
-        let scale = if rect.w > rect.h { rect.w } else { rect.h };
-        let min = Point3::new(rect.x, rect.y, 0f32);
-        let max = min.add_element_wise(scale);
+    fn bounds(w: u32, h: u32) -> Bounds<Point3<f32>> {
+        const BORDER: f32 = 1f32;
+        let scale = if w > h { w } else { h } as f32;
+        let min = Point3::new(0f32, 0f32, 0f32).sub_element_wise(BORDER);
+        let max = min.add_element_wise(scale).add_element_wise(BORDER);
+        Bounds::new(min, max)
+    }
+
+    fn from_screen_size((w, h): (u32, u32)) -> Self {
         Self{
             enabled: true,
-            bounds: Bounds::new(min, max)}
+            bounds: Self::bounds(w, h)}
+    }
+
+    fn update_bounds(&mut self, w: u32, h: u32) {
+        self.bounds = Self::bounds(w, h);
     }
 }
 
-struct ScreenCoords(ggez::graphics::Rect);
+struct ScreenSize(u32, u32);
 
-impl Default for ScreenCoords {
+impl Default for ScreenSize {
     fn default() -> Self {
-        Self(ggez::graphics::Rect::default())
+        Self(1, 1)
+    }
+}
+
+impl From<(u32, u32)> for ScreenSize {
+    fn from((w, h): (u32, u32)) -> Self {
+        Self(w, h)
+    }
+}
+
+impl From<glutin::dpi::PhysicalSize<u32>> for ScreenSize {
+    fn from(size: glutin::dpi::PhysicalSize<u32>) -> Self {
+        Self(size.width, size.height)
     }
 }
 
@@ -100,11 +149,18 @@ impl Default for BallCount {
     }
 }
 
-struct Color(ggez::graphics::Color);
+#[derive(Copy, Clone)]
+struct Color(f32, f32, f32, f32);
 
 impl Default for Color {
     fn default() -> Self {
-        Self(ggez::graphics::WHITE)
+        Self(1.0, 1.0, 1.0, 1.0)
+    }
+}
+
+impl Into<[f32; 4]> for Color {
+    fn into(self) -> [f32; 4] {
+        [self.0, self.1, self.2, self.3]
     }
 }
 
@@ -165,21 +221,22 @@ fn create_ball<T: specs::Builder>(
 
 struct Lifecycle;
 impl<'a> specs::System<'a> for Lifecycle {
+    #[allow(clippy::type_complexity)]
     type SystemData = (
         specs::Entities<'a>,
         specs::Read<'a, specs::LazyUpdate>,
         specs::Read<'a, Time>,
-        specs::Read<'a, ScreenCoords>,
+        specs::Read<'a, ScreenSize>,
         specs::Write<'a, BallCount>,
         specs::ReadStorage<'a, Lifetime>,
     );
 
     #[inline(never)]
     fn run(&mut self, data: Self::SystemData) {
-        let (entities, lazy, time, screen_coords, mut ball_count, lifetimes) = data;
+        let (entities, lazy, time, screen_size, mut ball_count, lifetimes) = data;
 
         for (entity, &Lifetime(expires)) in (&entities, &lifetimes).join() {
-            if expires < time.current {
+            if expires < time.sim {
                 entities.delete(entity).unwrap();
                 ball_count.0 -= 1;
             }
@@ -188,7 +245,7 @@ impl<'a> specs::System<'a> for Lifecycle {
         const BALL_COUNT_MAX: u32 = 2500;
         const LIFETIME_MIN_MS: u32 = 10000;
         const LIFETIME_MAX_MS: u32 = 50000;
-        for _ in 0..BALL_COUNT_MAX*time.delta.subsec_millis()/LIFETIME_MIN_MS {
+        for _ in 0..BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS {
             if ball_count.0 >= BALL_COUNT_MAX {
                 break;
             }
@@ -197,15 +254,15 @@ impl<'a> specs::System<'a> for Lifecycle {
 
             let r = rand::thread_rng().gen_range(0.5f32, 2.0f32).exp();
 
-            let x0 = screen_coords.0.x + r;
-            let x1 = screen_coords.0.w - 2f32 * r + x0;
+            let x0 = 0f32 + r;
+            let x1 = screen_size.0 as f32 - 2f32 * r + x0;
             let x = rand::thread_rng().gen_range(x0, x1);
 
-            let y = screen_coords.0.y + r;
+            let y = screen_size.1 as f32 + r;
 
             create_ball(
                 lazy.create_entity(&entities),
-                (time.current + lifetime).into(),
+                (time.sim + lifetime).into(),
                 (x, y).into(),
                 r.into(),
             );
@@ -225,11 +282,11 @@ impl<'a> specs::System<'a> for Kinematics {
     #[inline(never)]
     fn run(&mut self, data: Self::SystemData) {
         let (time, mut positions) = data;
-        let dt = (time.delta.as_secs() as f32) + (time.delta.subsec_micros() as f32) / 1_000_000f32;
+        let dt = (time.step.as_secs() as f32) + (time.step.subsec_micros() as f32) / 1_000_000f32;
         let gravity = 50f32 * dt * dt;
         for mut pos in (&mut positions).join() {
             let mut pos_2 = pos.1 + (pos.1 - pos.0);
-            pos_2.y += gravity;
+            pos_2.y -= gravity;
             pos.0 = pos.1;
             pos.1 = pos_2;
         }
@@ -261,9 +318,10 @@ impl Collisions {
 }
 
 impl<'a> specs::System<'a> for Collisions {
+    #[allow(clippy::type_complexity)]
     type SystemData = (
         specs::Entities<'a>,
-        specs::Read<'a, ScreenCoords>,
+        specs::Read<'a, ScreenSize>,
         specs::Read<'a, CollisionSystemConfig>,
         specs::WriteStorage<'a, VerletPosition>,
         specs::ReadStorage<'a, Radius>,
@@ -272,10 +330,10 @@ impl<'a> specs::System<'a> for Collisions {
 
     #[inline(never)]
     fn run(&mut self, data: Self::SystemData) {
-        let (entities, screen_coords, collision_config, mut positions, radii, mut colors) = data;
+        let (entities, screen_size, collision_config, mut positions, radii, mut colors) = data;
 
-        for Color(color) in (&mut colors).join() {
-            *color = ggez::graphics::Color::new(1f32, 0.5f32, 0f32, 1f32);
+        for color in (&mut colors).join() {
+            *color = Color(1f32, 0.5f32, 0f32, 1f32);
         }
 
         let start = Instant::now();
@@ -303,9 +361,9 @@ impl<'a> specs::System<'a> for Collisions {
                     std::f32::INFINITY, None,
                     |ray_origin, ray_direction, _dist, id| {
                         let ent = entities.entity(id);
-                        let Color(color) = colors.get_mut(ent).unwrap();
-                        *color = ggez::graphics::Color::new(0.5f32, 1f32, 0f32, 1f32);
-                        
+                        let color = colors.get_mut(ent).unwrap();
+                        *color = Color(0.5f32, 1f32, 0f32, 1f32);
+
                         let position = positions.get(ent).unwrap();
                         let Radius(r) = radii.get(ent).unwrap();
                         let center = Point3::new(position.1.x, position.1.y, 0f32);
@@ -326,8 +384,8 @@ impl<'a> specs::System<'a> for Collisions {
                     })
                 {
                     let ent = entities.entity(id);
-                    let Color(color) = colors.get_mut(ent).unwrap();
-                    *color = ggez::graphics::Color::new(1f32, 0f32, 0f32, 1f32);
+                    let color = colors.get_mut(ent).unwrap();
+                    *color = Color(1f32, 0f32, 0f32, 1f32);
                 }
             }
 
@@ -385,10 +443,10 @@ impl<'a> specs::System<'a> for Collisions {
             positions.get_mut(ent1).unwrap().1 += v * (1f32 - u);
         }
 
-        let x_min = screen_coords.0.x;
-        let y_min = screen_coords.0.y;
-        let x_max = screen_coords.0.w + x_min;
-        let y_max = screen_coords.0.h + y_min;
+        let x_min = 0f32;
+        let y_min = 0f32;
+        let x_max = screen_size.0 as f32 + x_min;
+        let y_max = screen_size.1 as f32 + y_min;
 
         for (mut pos, &Radius(r)) in (&mut positions, &radii).join() {
             if pos.1.x - r < x_min {
@@ -407,6 +465,158 @@ impl<'a> specs::System<'a> for Collisions {
     }
 }
 
+#[derive(Copy, Clone)]
+struct VertexData {
+    offset: [f32; 2],
+}
+implement_vertex!(VertexData, offset);
+
+#[derive(Copy, Clone)]
+struct InstanceData {
+    origin: [f32; 2],
+    scale : [f32; 2],
+    color : [f32; 4],
+}
+implement_vertex!(InstanceData, origin, scale, color);
+
+struct InstanceBuffer {
+    vbo: glium::VertexBuffer<InstanceData>,
+    count: usize
+}
+
+impl InstanceBuffer {
+    fn with_capacity(display: &glium::Display, count: usize) -> Option<Self> {
+        let vbo = glium::VertexBuffer::<InstanceData>::empty_persistent(display, count).ok()?;
+        Some(Self{ vbo, count })
+    }
+
+    fn resize(&mut self, display: &glium::Display, count: usize) {
+        if count > self.vbo.len() {
+            self.vbo = glium::VertexBuffer::<InstanceData>::empty_persistent(display, count)
+                .expect("failed to create vbo");
+        }
+        self.count = count;
+    }
+
+    fn slice(&self) -> glium::vertex::VertexBufferSlice<'_, InstanceData> {
+        self.vbo.slice(0..self.count).unwrap()
+    }
+
+    fn write(&mut self, display: &glium::Display, data: &[InstanceData]) {
+        self.resize(display, data.len());
+        if !data.is_empty() {
+            self.slice().write(data);
+        }
+    }
+}
+
+struct Renderer {
+    program_main: glium::Program,
+    screen_size : [f32; 2],
+    boxes       : InstanceBuffer,
+    circles     : InstanceBuffer,
+    vbo_box     : glium::VertexBuffer<VertexData>,
+    vbo_circle  : glium::VertexBuffer<VertexData>,
+}
+
+impl Renderer {
+    fn from_display(display: &glium::Display) -> Self {
+        let screen_size = display.get_framebuffer_dimensions();
+        let screen_size = [screen_size.0 as f32, screen_size.1 as f32];
+
+        let program_main = glium::Program::from_source(display,
+            r#"
+                #version 450 core
+
+                in vec2 offset;
+                in vec2 origin;
+                in vec2 scale;
+                in vec4 color;
+
+                out vec4 v_color;
+
+                uniform vec2 screen_size;
+
+                void main() {
+                    vec2 position = origin + scale * offset;
+                    v_color = color;
+                    gl_Position = vec4(2.0 * position / screen_size - 1.0, 0.0, 1.0);
+                }
+            "#,
+            r#"
+                #version 450 core
+
+                in vec4 v_color;
+
+                out vec4 f_color;
+
+                void main() {
+                    f_color = vec4(v_color.rgb, 1.0);
+                }
+            "#,
+            None)
+            .expect("failed to compile shader");
+        let boxes   = InstanceBuffer::with_capacity(display, 40_000).expect("failed to create boxes instance buffer");
+        let circles = InstanceBuffer::with_capacity(display, 10_000).expect("failed to create circles instance buffer");
+        let vbo_box = glium::VertexBuffer::immutable(display, &[
+            VertexData{ offset: [-0.5, -0.5] },
+            VertexData{ offset: [ 0.5, -0.5] },
+            VertexData{ offset: [ 0.5,  0.5] },
+            VertexData{ offset: [-0.5,  0.5] },
+        ]).expect("failed to create box vbo");
+        let vbo_circle = {
+            const SIDES: u32 = 16;
+            let data: Vec<_> = (0..SIDES)
+                .map(|i| 2f32 * std::f32::consts::PI * (i as f32) / (SIDES as f32))
+                .map(|u| [u.cos(), u.sin()])
+                .map(|offset| VertexData{ offset })
+                .collect();
+            glium::VertexBuffer::immutable(display, data.as_slice())
+                .expect("failed to create circle vbo")
+        };
+        Self{
+            program_main,
+            screen_size,
+            boxes,
+            circles,
+            vbo_box,
+            vbo_circle,
+        }
+    }
+
+    fn update_screen_size(&mut self, size: [f32; 2]) {
+        self.screen_size = size;
+    }
+
+    fn update_boxes(&mut self, display: &glium::Display, boxes: &[InstanceData]) {
+        self.boxes.write(display, boxes);
+    }
+
+    fn update_circles(&mut self, display: &glium::Display, circles: &[InstanceData]) {
+        self.circles.write(display, circles);
+    }
+
+    fn draw(&self, frame: &mut glium::Frame) {
+        use glium::Surface;
+        let params = glium::DrawParameters{
+            .. Default::default()
+        };
+        let uniforms = uniform!{
+            screen_size: self.screen_size
+        };
+        frame.draw(
+            (&self.vbo_circle, self.circles.slice().per_instance().unwrap()),
+            glium::index::NoIndices(glium::index::PrimitiveType::LineLoop),
+            &self.program_main, &uniforms, &params)
+            .expect("failed to draw circles");
+        frame.draw(
+            (&self.vbo_box, self.boxes.slice().per_instance().unwrap()),
+            glium::index::NoIndices(glium::index::PrimitiveType::LineLoop),
+            &self.program_main, &uniforms, &params)
+            .expect("failed to draw boxes");
+    }
+}
+
 struct GameState {
     world: specs::World,
     lifecycle: Lifecycle,
@@ -417,6 +627,8 @@ struct GameState {
 impl GameState {
     const FRAME_RATE: u32 = 100;
     const FRAME_TIME_US: u32 = 1_000_000u32 / Self::FRAME_RATE;
+    const MIN_FRAME_RATE: u32 = 20;
+    const MAX_FRAME_TIME_US: u32 = 1_000_000u32 / Self::MIN_FRAME_RATE;
 
     fn new() -> Self {
         Self{
@@ -428,95 +640,69 @@ impl GameState {
     }
 }
 
-impl ggez::event::EventHandler for GameState {
+impl GameState {
     #[inline(never)]
-    fn update(&mut self, context: &mut ggez::Context) -> ggez::GameResult<()> {
-        self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
+    fn update(&mut self) {
+        let step = Duration::from_micros(Self::FRAME_TIME_US as u64);
+        let max_delta = Duration::from_micros(Self::MAX_FRAME_TIME_US as u64);
+        self.world.get_mut::<Time>().unwrap().update(step, max_delta);
 
-        self.world.write_resource::<Time>().delta =
-            Duration::from_micros(Self::FRAME_TIME_US as u64);
-        let mut i = 0;
-        while ggez::timer::check_update_time(context, Self::FRAME_RATE) {
-            if i < 10 {
-                self.world.write_resource::<Time>().current = ggez::timer::time_since_start(&context);
-                self.lifecycle.run_now(&self.world);
-                self.world.maintain();
-                self.kinematics.run_now(&self.world);
-                self.collisions.run_now(&self.world);
-            }
-            i += 1;
-        }
-        Ok(())
-    }
-
-    fn key_down_event(&mut self,
-        _context: &mut ggez::Context,
-        key: ggez::input::keyboard::KeyCode,
-        _mods: ggez::input::keyboard::KeyMods,
-        _repeat: bool)
-    {
-        match key {
-            ggez::input::keyboard::KeyCode::Space => {
-                let mut collision_config = self.world.write_resource::<CollisionSystemConfig>();
-                collision_config.enabled = !collision_config.enabled;
-            },
-            _ => {}
+        while self.world.get_mut::<Time>().unwrap().step() {
+            self.lifecycle.run_now(&self.world);
+            self.world.maintain();
+            self.kinematics.run_now(&self.world);
+            self.collisions.run_now(&self.world);
         }
     }
 
     #[inline(never)]
-    fn draw(&mut self, context: &mut ggez::Context) -> ggez::GameResult<()> {
-        use ggez::graphics::{BLACK, clear, draw, DrawMode, MeshBuilder, present, Rect};
+    fn draw(&mut self, renderer: &mut Renderer, display: &glium::Display) {
+        use glium::Surface;
+        let mut frame = display.draw();
+        frame.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
 
-        clear(context, BLACK);
+        let time = self.world.get_mut::<Time>().unwrap();
 
-        let t = ggez::timer::remaining_update_time(context);
+        let t = time.remainder();
         let u: f32 = ((t.as_secs() as f32) * 1_000_000f32 + (t.subsec_micros() as f32))
             / (Self::FRAME_TIME_US as f32);
 
-        {
+        let circles: Vec<_> = {
             let positions = self.world.read_storage::<VerletPosition>();
             let radii     = self.world.read_storage::<Radius>();
             let colors    = self.world.read_storage::<Color>();
 
-            let iter = &mut (&positions, &radii, &colors).join().peekable();
-            while let Some(_) = iter.peek() {
-                let mut mesh_builder = MeshBuilder::new();
-                for (&pos, &Radius(r), &Color(color)) in iter.take(500) {
-                    let pos_ = pos.1 + (pos.1 - pos.0) * u;
-                    mesh_builder.circle::<[f32; 2]>(DrawMode::stroke(1.5f32), pos_.into(), r, 0.7f32, color);
-                }
-                let mesh = mesh_builder.build(context)?;
-                draw(context, &mesh, ([0f32, 0f32],))?;
-            }
-        }
+            (&positions, &radii, &colors).join()
+                .map(|(&pos, &Radius(r), &color)|
+                    InstanceData{
+                        origin: (pos.1 + (pos.1 - pos.0) * u).into(),
+                        scale : [r, r],
+                        color : color.into(),
+                    })
+                .collect()
+        };
+        renderer.update_circles(display, circles.as_slice());
 
         let collision_config = self.world.read_resource::<CollisionSystemConfig>();
-        if collision_config.enabled {
-            let iter = &mut self.collisions.system.iter().peekable();
-            while let Some(_) = iter.peek() {
-                let mut mesh_builder = MeshBuilder::new();
-                for &(index, _) in iter.take(1000) {
+        let boxes: Vec<_> = if collision_config.enabled {
+            self.collisions.system.iter()
+                .map(|&(index, _)| {
                     use broadphase::SystemBounds;
                     let local: Bounds<_> = index.into();
                     let global = collision_config.bounds.to_global(local);
-                    let global_size = global.sizef();
-                    let rect = Rect::new(
-                        global.min.x,
-                        global.min.y,
-                        global_size.x,
-                        global_size.y);
-                    mesh_builder.rectangle(DrawMode::stroke(1.5f32), rect,
-                        ggez::graphics::Color::new(0.3f32, 0.3f32, 0.3f32, 1f32));
-                }
-                let mesh = mesh_builder.build(context)?;
-                draw(context, &mesh, ([0f32, 0f32],))?;
-            }
-        }
+                    InstanceData{
+                        origin: global.center().to_vec().truncate().into(),
+                        scale : global.sizef().truncate().into(),
+                        color : [0.3, 0.3, 0.3, 1.0],
+                    }
+                })
+                .collect()
+        } else { Vec::default() };
+        renderer.update_boxes(display, boxes.as_slice());
 
-        present(context)?;
+        renderer.draw(&mut frame);
 
-        Ok(())
+        frame.finish().unwrap();
     }
 }
 
@@ -526,28 +712,68 @@ fn main() {
     #[cfg(debug_assertions)]
     println!("Example should be run in RELEASE MODE for optimal performance!");
 
-    use ggez::conf::*;
-    let (mut context, mut event_loop) = ggez::ContextBuilder::new("broadphase_demo", "zvxryb")
-        .window_setup(
-            WindowSetup::default()
-                .title("broadphase demo")
-                .samples(NumSamples::Eight))
-        .window_mode(
-            WindowMode::default()
-                .dimensions(1280f32, 720f32))
-        .build()
-        .expect("failed to build ggez context");
+    let events_loop = glutin::event_loop::EventLoop::new();
+    let window_builder = glutin::window::WindowBuilder::new()
+        .with_title("Broadphase Util: Show Boxes")
+        .with_resizable(true);
+    let context = glutin::ContextBuilder::new()
+        .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (4, 5)))
+        .with_gl_profile(glutin::GlProfile::Core)
+        .with_multisampling(4);
+    let display = glium::Display::new(window_builder, context, &events_loop)
+        .expect("failed to create display");
 
-    let mut state = GameState::new();
-    let screen_rect = ggez::graphics::screen_coordinates(&context);
-    state.world.insert(Time::default());
-    state.world.insert(ScreenCoords(screen_rect));
-    state.world.insert(CollisionSystemConfig::from_screen_coords(screen_rect));
-    state.world.insert(BallCount(0));
-    state.world.register::<Lifetime>();
-    state.world.register::<VerletPosition>();
-    state.world.register::<Radius>();
-    state.world.register::<Color>();
+    let mut renderer = Renderer::from_display(&display);
+    let mut game_state = GameState::new();
+    let screen_size = display.get_framebuffer_dimensions();
+    game_state.world.insert(Time::default());
+    game_state.world.insert(ScreenSize::from(screen_size));
+    game_state.world.insert(CollisionSystemConfig::from_screen_size(screen_size));
+    game_state.world.insert(BallCount(0));
+    game_state.world.register::<Lifetime>();
+    game_state.world.register::<VerletPosition>();
+    game_state.world.register::<Radius>();
+    game_state.world.register::<Color>();
 
-    ggez::event::run(&mut context, &mut event_loop, &mut state).expect("failed to run game");
+    events_loop.run(move |event, _window_target, control| {
+        use crate::glutin::event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent};
+        match event {
+            Event::DeviceEvent{event, ..} =>
+                match event {
+                    DeviceEvent::Key(glutin::event::KeyboardInput{state: key_state, virtual_keycode, ..}) =>
+                        match virtual_keycode {
+                            Some(VirtualKeyCode::Space) =>
+                                if key_state == ElementState::Pressed {
+                                    let mut collision_config = game_state.world.write_resource::<CollisionSystemConfig>();
+                                    collision_config.enabled = !collision_config.enabled;
+                                }
+                            _ => {}
+                        }
+                    _ => {}
+                }
+            Event::WindowEvent{event, ..} => {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        *control = glutin::event_loop::ControlFlow::Exit;
+                    }
+                    WindowEvent::Resized(size) => {
+                        renderer.update_screen_size(size.into());
+                        *game_state.world.get_mut::<ScreenSize>().unwrap() = size.into();
+                        game_state.world.get_mut::<CollisionSystemConfig>().unwrap()
+                            .update_bounds(size.width, size.height);
+                        display.gl_window().window().request_redraw();
+                    }
+                    _ => {}
+                }
+            }
+            Event::MainEventsCleared => {
+                game_state.update();
+                display.gl_window().window().request_redraw();
+            }
+            Event::RedrawRequested(..) => {
+                game_state.draw(&mut renderer, &display);
+            }
+            _ => {}
+        }
+    });
 }
