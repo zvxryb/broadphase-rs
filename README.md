@@ -1,4 +1,4 @@
-# broadphase-rs [![Crate](https://img.shields.io/crates/v/zvxryb-broadphase)](https://crates.io/crates/zvxryb-broadphase) [![Docs](https://docs.rs/zvxryb-broadphase/badge.svg)](https://docs.rs/zvxryb-broadphase) [![Build Status](https://travis-ci.org/zvxryb/broadphase-rs.svg?branch=master)](https://travis-ci.org/zvxryb/broadphase-rs)
+# broadphase-rs [![Crate](https://img.shields.io/crates/v/zvxryb-broadphase)](https://crates.io/crates/zvxryb-broadphase) [![Docs](https://docs.rs/zvxryb-broadphase/badge.svg)](https://docs.rs/zvxryb-broadphase) [![Build](https://github.com/zvxryb/broadphase-rs/workflows/Build/badge.svg)](https://github.com/zvxryb/broadphase-rs/actions)
 
 ![Collision Grid](docs/images/example_with_grid.png)
 
