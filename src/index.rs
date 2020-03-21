@@ -24,6 +24,16 @@ use std::fmt::{Debug, Formatter};
 /// 
 /// `<SpatialIndex as Default>::default()` is required to return an index which encompasses the entire system
 /// bounds (i.e. zero origin and zero depth)
+/// 
+/// The following index types are provided:
+/// 
+/// [`Index32_2D`]: struct.Index32_2D.html
+/// [`Index64_2D`]: struct.Index64_2D.html
+/// [`Index64_3D`]: struct.Index64_3D.html
+/// 
+/// * [`Index32_2D`]: A 32-bit 2D index type providing 14 bits' precision per axis
+/// * [`Index64_2D`]: A 64-bit 2D index type providing 29 bits' precision per axis
+/// * [`Index64_3D`]: A 64-bit 3D index type providing 19 bits' precision per axis
 
 pub trait SpatialIndex: Clone + Copy + Default + Ord + Send + std::fmt::Debug {
     type Diff: cgmath::VectorSpace<Scalar = u32>;
@@ -69,8 +79,10 @@ macro_rules! index_impl {
 
             index_impl!{codec: $dim, $bits}
         
-            fn level_mask(depth: u32) -> u64 {
-                !(((1 as index_impl!{primitive_type: $bits}) << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - $dim * depth)) - 1) & Self::ORIGIN_MASK
+            fn level_mask(depth: u32) -> index_impl!{primitive_type: $bits} {
+                if depth <= 0 { 0 } else {
+                    (((1 as index_impl!{primitive_type: $bits}) << ($dim * depth)) - 1) << (Self::ORIGIN_BITS + Self::ORIGIN_SHIFT - $dim * depth)
+                }
             }
         }
 
@@ -95,7 +107,7 @@ macro_rules! index_impl {
                 let Self(mut index) = self;
                 index &= !Self::DEPTH_MASK;
                 index |= Self::DEPTH_MASK & (
-                    <u64 as From<u32>>::from(Self::clamp_depth(depth)) << Self::DEPTH_SHIFT);
+                    <index_impl!{primitive_type: $bits} as From<u32>>::from(Self::clamp_depth(depth)) << Self::DEPTH_SHIFT);
                 Self(index)
             }
 
@@ -117,6 +129,7 @@ macro_rules! index_impl {
     (point_type: 2) => {Point2<u32>};
     (point_type: 3) => {Point3::<u32>};
     (codec: 2, $bits:tt) => {
+        #[allow(overflowing_literals)] // allow (intentional) truncating casts
         #[inline]
         fn decode_axis(origin: index_impl!{primitive_type: $bits}) -> u32 {
             let axis00 =  origin & 0x1111_1111_1111_1111 as index_impl!{primitive_type: $bits};
@@ -136,7 +149,8 @@ macro_rules! index_impl {
             let axis4_ = axis40 | axis41;
             (axis4_ as u32) << (32 - Self::AXIS_BITS)
         }
-    
+
+        #[allow(overflowing_literals)] // allow (intentional) truncating casts
         #[inline]
         fn encode_axis(origin: u32) -> index_impl!{primitive_type: $bits} {
             let axis0_ = <index_impl!{primitive_type: $bits} as From<u32>>::from(origin >> (32 - Self::AXIS_BITS));
@@ -276,6 +290,8 @@ macro_rules! index_impl {
     };
 }
 
+index_impl!{index: Index32_2D, 2, 32, 4, 14}
+index_impl!{index: Index64_2D, 2, 64, 5, 29}
 index_impl!{index: Index64_3D, 3, 64, 5, 19}
 
 impl Debug for Index64_3D {
@@ -288,6 +304,32 @@ impl Debug for Index64_3D {
             origin.x,
             origin.y,
             origin.z,
+            self.depth())
+    }
+}
+
+impl Debug for Index32_2D {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let Self(index) = self;
+        let origin_bits = (index & Self::ORIGIN_MASK) >> Self::ORIGIN_SHIFT;
+        let origin = self.origin();
+        write!(f, "Index32_2D{{origin={{0x{:011x}, <0x{:04x}, 0x{:04x}>}}, depth={:}}}",
+            origin_bits,
+            origin.x,
+            origin.y,
+            self.depth())
+    }
+}
+
+impl Debug for Index64_2D {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        let Self(index) = self;
+        let origin_bits = (index & Self::ORIGIN_MASK) >> Self::ORIGIN_SHIFT;
+        let origin = self.origin();
+        write!(f, "Index64_2D{{origin={{0x{:022x}, <0x{:08x}, 0x{:08x}>}}, depth={:}}}",
+            origin_bits,
+            origin.x,
+            origin.y,
             self.depth())
     }
 }

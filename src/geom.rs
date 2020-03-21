@@ -2,12 +2,21 @@
 
 use crate::index::SpatialIndex;
 
-use cgmath::{Point3, Vector3};
+use cgmath::{Point2, Point3, Vector2, Vector3};
 use cgmath::prelude::*;
 use num_traits::{Float, One, PrimInt};
 use smallvec::SmallVec;
 
 use std::fmt::{Debug, Formatter};
+
+pub trait VecDim {
+    const DIM: usize;
+}
+
+impl<T> VecDim for Point2 <T> { const DIM: usize = 2; }
+impl<T> VecDim for Point3 <T> { const DIM: usize = 3; }
+impl<T> VecDim for Vector2<T> { const DIM: usize = 2; }
+impl<T> VecDim for Vector3<T> { const DIM: usize = 3; }
 
 fn fold_arr<Arr, State, F>(arr: Arr, init: State, f: F) -> State
 where
@@ -171,6 +180,64 @@ where
     }
 }
 
+impl<Index> IndexGenerator<Index> for Bounds<Point2<u32>>
+where
+    Index: SpatialIndex<Diff = Vector2<u32>, Point = Point2<u32>>
+{
+    type Output = SmallVec<[Index; 4]>;
+
+    fn indices(self, min_depth: Option<u32>) -> Self::Output {
+        let max_axis = max_axis(self.sizei());
+        let mut depth = (max_axis - 1u32).leading_zeros();
+        if let Some(min_depth) = min_depth {
+            if depth < min_depth {
+                depth = min_depth;
+            }
+        }
+        depth = Index::clamp_depth(depth);
+        
+        self.indices_at_depth(depth)
+    }
+
+    fn indices_at_depth(self, depth: u32) -> Self::Output {
+        if depth == 0 {
+            return smallvec![Index::default()];
+        }
+
+        let min = self.min.map(|scalar| truncate_to_depth(scalar, depth));
+        let max = self.max.map(|scalar| truncate_to_depth(scalar, depth));
+
+        let mut indices: Self::Output = Self::Output::new();
+
+        let step = scale_at_depth(depth);
+        let mut y = min.y;
+        loop {
+            let mut x = min.x;
+            loop {
+                indices.push(Index::default()
+                    .set_depth(depth)
+                    .set_origin(Point2::new(x, y)));
+
+                if x >= max.x {
+                    break;
+                }
+                x += step;
+            }
+
+            if y >= max.y {
+                break;
+            }
+            y += step;
+        }
+
+        if indices.len() > 8 {
+            warn!("indices_at_depth generated more than 8 indices; decrease min_depth or split large objects to avoid heap allocations");
+        }
+
+        indices
+    }
+}
+
 impl<Index> IndexGenerator<Index> for Bounds<Point3<u32>>
 where
     Index: SpatialIndex<Diff = Vector3<u32>, Point = Point3<u32>>
@@ -309,6 +376,43 @@ where
     }
 }
 
+impl TestGeometry for BoxTestGeometry<Point2<f32>> {
+    type SubdivideResult = [Self; 4];
+    type TestOrder = [usize; 4];
+
+    fn subdivide(&self) -> Self::SubdivideResult {
+        let center = self.cell_bounds.center();
+        let mut results: [Self; 4] = [
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone()
+        ];
+        for (cell, result) in results.iter_mut().enumerate() {
+            let bounds = &mut result.cell_bounds;
+            #[allow(clippy::needless_range_loop)]
+            for axis in 0..2 {
+                let side = cell & (1 << axis) != 0;
+                if side {
+                    bounds.min[axis] = center[axis];
+                } else {
+                    bounds.max[axis] = center[axis];
+                }
+            }
+        }
+        results
+    }
+
+    fn test_order(&self) -> Self::TestOrder {
+        [0, 1, 2, 3]
+    }
+
+    fn should_test(&self, nearest: f32) -> bool {
+        debug_assert!(!nearest.is_finite(), "BoxTestGeometry does not support \"pick\" operations");
+        self.cell_bounds.overlaps(self.test_bounds)
+    }
+}
+
 impl TestGeometry for BoxTestGeometry<Point3<f32>> {
     type SubdivideResult = [Self; 8];
     type TestOrder = [usize; 8];
@@ -364,6 +468,22 @@ where
     range_max: f32
 }
 
+impl Debug for RayTestGeometry<Point2<f32>> {
+    fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
+        write!(f, "RayTestGeometry{{{{({:}, {:}) - ({:}, {:})}}, ({:}, {:}), ({:}, {:}), {{{:}-{:}}}}}",
+            self.cell_bounds.min.x,
+            self.cell_bounds.min.y,
+            self.cell_bounds.max.x,
+            self.cell_bounds.max.y,
+            self.origin.x,
+            self.origin.y,
+            self.direction.x,
+            self.direction.y,
+            self.range_min,
+            self.range_max)
+    }
+}
+
 impl Debug for RayTestGeometry<Point3<f32>> {
     fn fmt(&self, f: &mut Formatter) -> std::fmt::Result {
         write!(f, "RayTestGeometry{{{{({:}, {:}, {:}) - ({:}, {:}, {:})}}, ({:}, {:}, {:}), ({:}, {:}, {:}), {{{:}-{:}}}}}",
@@ -386,7 +506,7 @@ impl Debug for RayTestGeometry<Point3<f32>> {
 
 impl<Point> RayTestGeometry<Point>
 where
-    Point: EuclideanSpace<Scalar = f32>
+    Point: EuclideanSpace<Scalar = f32> + VecDim
 {
     /// Construct ray test geometry
     /// 
@@ -404,7 +524,7 @@ where
     {
         let distance_0 = (system_bounds.min - origin).div_element_wise(direction);
         let distance_1 = (system_bounds.max - origin).div_element_wise(direction);
-        for axis in 0..3 {
+        for axis in 0..<Point as VecDim>::DIM {
             let is_forward = direction[axis] > 0f32;
             let (d0, d1) = if is_forward {
                     (distance_0[axis], distance_1[axis])
@@ -421,6 +541,72 @@ where
             direction,
             range_min,
             range_max}
+    }
+}
+
+impl TestGeometry for RayTestGeometry<Point2<f32>> {
+    type SubdivideResult = [Self; 4];
+    type TestOrder = [usize; 4];
+
+    fn subdivide(&self) -> Self::SubdivideResult {
+        let center = self.cell_bounds.center();
+        let distance = (self.cell_bounds.center() - self.origin).div_element_wise(self.direction);
+        let mut results: [Self; 4] = [
+            self.clone(),
+            self.clone(),
+            self.clone(),
+            self.clone()
+        ];
+        for (cell, result) in results.iter_mut().enumerate() {
+            let range_min = &mut result.range_min;
+            let range_max = &mut result.range_max;
+            for axis in 0..2 {
+                let side = cell & (1 << axis) != 0;
+                if distance[axis].is_finite() {
+                    let is_towards = (self.direction[axis] > 0f32) != side;
+                    if is_towards {
+                        *range_max = range_max.min(distance[axis]);
+                    } else {
+                        *range_min = range_min.max(distance[axis]);
+                    }
+                } else if (self.origin[axis] > center[axis]) != side {
+                    *range_min = std::f32::INFINITY;
+                    *range_max = std::f32::NEG_INFINITY;
+                }
+            }
+            let bounds = &mut result.cell_bounds;
+            #[allow(clippy::needless_range_loop)]
+            for axis in 0..2 {
+                let side = cell & (1 << axis) != 0;
+                if side {
+                    bounds.min[axis] = center[axis];
+                } else {
+                    bounds.max[axis] = center[axis];
+                }
+            }
+        }
+        results
+    }
+
+    fn test_order(&self) -> Self::TestOrder {
+        let abs = self.direction.map(|x| x.abs());
+        #[allow(clippy::collapsible_if)]
+        let axes = if abs.x <= abs.y { [0, 1] } else { [1, 0] };
+
+        let mut order: [usize; 4] = [0; 4];
+        for (cell_src, cell_dst) in order.iter_mut().enumerate() {
+            let i0 = (cell_src & 1 != 0) == (self.direction[axes[0]] >= 0f32);
+            let i1 = (cell_src & 2 != 0) == (self.direction[axes[1]] >= 0f32);
+            *cell_dst =
+                ((i0 as usize) << axes[0]) |
+                ((i1 as usize) << axes[1]);
+        }
+
+        order
+    }
+
+    fn should_test(&self, nearest: f32) -> bool {
+        self.range_min < self.range_max && self.range_min < nearest
     }
 }
 

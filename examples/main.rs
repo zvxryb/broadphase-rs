@@ -16,7 +16,7 @@ use rand::prelude::*;
 use specs::prelude::*;
 
 use broadphase::Bounds;
-use cgmath::{Point2, Point3, Vector2, Vector3};
+use cgmath::{Point2, Vector2};
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System as SystemAlloc};
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
@@ -88,7 +88,7 @@ impl Default for Time {
 
 struct CollisionSystemConfig {
     enabled: bool,
-    bounds: Bounds<Point3<f32>>
+    bounds: Bounds<Point2<f32>>
 }
 
 impl Default for CollisionSystemConfig {
@@ -96,16 +96,16 @@ impl Default for CollisionSystemConfig {
         Self{
             enabled: true,
             bounds: Bounds::new(
-                Point3::new(0f32, 0f32, 0f32),
-                Point3::new(1f32, 1f32, 1f32))}
+                Point2::new(0f32, 0f32),
+                Point2::new(1f32, 1f32))}
     }
 }
 
 impl CollisionSystemConfig {
-    fn bounds(w: u32, h: u32) -> Bounds<Point3<f32>> {
+    fn bounds(w: u32, h: u32) -> Bounds<Point2<f32>> {
         const BORDER: f32 = 1f32;
         let scale = if w > h { w } else { h } as f32;
-        let min = Point3::new(0f32, 0f32, 0f32).sub_element_wise(BORDER);
+        let min = Point2::new(0f32, 0f32).sub_element_wise(BORDER);
         let max = min.add_element_wise(scale).add_element_wise(BORDER);
         Bounds::new(min, max)
     }
@@ -302,7 +302,7 @@ impl<'a> specs::System<'a> for Kinematics {
 }
 
 struct Collisions {
-    system: broadphase::Layer<broadphase::Index64_3D, specs::world::Index>,
+    system: broadphase::Layer<broadphase::Index32_2D, specs::world::Index>,
     collisions: Vec<(specs::Entity, specs::Entity, f32, Vector2<f32>)>,
 }
 
@@ -347,8 +347,8 @@ impl<'a> specs::System<'a> for Collisions {
                 (&entities, &positions, &radii).join()
                     .map(|(ent, &pos, &Radius(r))| {
                         let bounds = Bounds{
-                            min: Point3::new(pos.1.x - r, pos.1.y - r, 0.0f32),
-                            max: Point3::new(pos.1.x + r, pos.1.y + r, 0.0f32)};
+                            min: Point2::new(pos.1.x - r, pos.1.y - r),
+                            max: Point2::new(pos.1.x + r, pos.1.y + r)};
                         (bounds, ent.id())}));
 
             self.system.par_sort();
@@ -356,8 +356,8 @@ impl<'a> specs::System<'a> for Collisions {
             {
                 if let Some((_dist, id, _point)) = self.system.pick_ray(
                     collision_config.bounds,
-                    Point3::new(0f32, 360f32, 0f32),
-                    Vector3::new(1f32, 0f32, 0f32),
+                    Point2::new(0f32, 360f32),
+                    Vector2::new(1f32, 0f32),
                     std::f32::INFINITY, None,
                     |ray_origin, ray_direction, _dist, id| {
                         let ent = entities.entity(id);
@@ -366,7 +366,7 @@ impl<'a> specs::System<'a> for Collisions {
 
                         let position = positions.get(ent).unwrap();
                         let Radius(r) = radii.get(ent).unwrap();
-                        let center = Point3::new(position.1.x, position.1.y, 0f32);
+                        let center = Point2::new(position.1.x, position.1.y);
                         let ball_dir = center - ray_origin;
                         let ball_proj = ray_direction.dot(ball_dir);
                         let ball_extent = (ball_proj.powi(2) - ball_dir.magnitude2() + r.powi(2)).sqrt();
@@ -691,8 +691,8 @@ impl GameState {
                     let local: Bounds<_> = index.into();
                     let global = collision_config.bounds.to_global(local);
                     InstanceData{
-                        origin: global.center().to_vec().truncate().into(),
-                        scale : global.sizef().truncate().into(),
+                        origin: global.center().to_vec().into(),
+                        scale : global.sizef().into(),
                         color : [0.3, 0.3, 0.3, 1.0],
                     }
                 })

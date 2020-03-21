@@ -6,7 +6,9 @@ use crate::geom::{
     IndexGenerator,
     RayTestGeometry,
     SystemBounds,
-    TestGeometry};
+    TestGeometry,
+    VecDim,
+};
 use crate::index::SpatialIndex;
 use crate::traits::ObjectID;
 
@@ -331,7 +333,7 @@ where
         range_max: f32,
         max_depth: Option<u32>) -> &'a Vec<ID>
     where
-        Point_: EuclideanSpace<Scalar = f32> + Debug,
+        Point_: EuclideanSpace<Scalar = f32> + VecDim + Debug,
         Point_::Diff: ElementWise + std::ops::Index<usize, Output = f32> + Debug,
         RayTestGeometry<Point_>: TestGeometry
     {
@@ -422,7 +424,7 @@ where
         max_depth: Option<u32>,
         mut get_dist: GetDist) -> Option<(f32, ID, Point_)>
     where
-        Point_: EuclideanSpace<Scalar = f32> + Debug,
+        Point_: EuclideanSpace<Scalar = f32> + VecDim + Debug,
         Point_::Diff: VectorSpace<Scalar = f32> + ElementWise + std::ops::Index<usize, Output = f32> + Debug,
         RayTestGeometry<Point_>: TestGeometry,
         GetDist: FnMut(&Point_, &Point_::Diff, f32, ID) -> f32
