@@ -78,5 +78,5 @@ mod index;
 mod layer;
 
 pub use crate::geom::{Bounds, TestGeometry, RayTestGeometry, SystemBounds};
-pub use crate::index::{SpatialIndex, Index64_3D};
+pub use crate::index::{SpatialIndex, Index32_2D, Index64_2D, Index64_3D};
 pub use crate::layer::{Layer, LayerBuilder};
