@@ -16,6 +16,11 @@ jobs:
       with:
         lfs: true
         submodules: true
+    - name: Cache apt packages
+      uses: actions/cache@v1
+      with:
+        path: /var/cache/apt/archives
+        key: apt-packages
     - name: Update package list
       run: sudo apt-get update
     - name: Install packages
