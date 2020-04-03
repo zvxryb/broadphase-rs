@@ -230,8 +230,8 @@ where
             y += step;
         }
 
-        if indices.len() > 8 {
-            warn!("indices_at_depth generated more than 8 indices; decrease min_depth or split large objects to avoid heap allocations");
+        if indices.len() > 4 {
+            warn!("indices_at_depth generated more than 4 indices; decrease min_depth or split large objects to avoid heap allocations");
         }
 
         indices
