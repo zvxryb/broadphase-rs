@@ -1,6 +1,7 @@
 // mlodato, 20190318
 
 extern crate zvxryb_broadphase as broadphase;
+extern crate backtrace;
 extern crate cgmath;
 extern crate env_logger;
 extern crate rand;
@@ -11,6 +12,12 @@ extern crate glium;
 
 use glium::glutin;
 
+#[macro_use]
+extern crate log;
+
+#[macro_use(defer)]
+extern crate scopeguard;
+
 use cgmath::prelude::*;
 use rand::prelude::*;
 use specs::prelude::*;
@@ -18,14 +25,39 @@ use specs::prelude::*;
 use broadphase::Bounds;
 use cgmath::{Point2, Vector2};
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System as SystemAlloc};
-use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
+enum AllocState {
+    Normal,
+    Dump,
+    Alloc,
+}
+
 struct AllocLogger {
-    count: AtomicUsize
+    count: AtomicUsize,
+    state: AtomicU32,
 }
 
 impl AllocLogger {
+    fn begin_dump(&self) {
+        while let Err(val) = self.state.compare_exchange_weak(
+            AllocState::Normal as u32,
+            AllocState::Dump as u32,
+            AtomicOrdering::SeqCst,
+            AtomicOrdering::Relaxed
+        ) { if val == AllocState::Dump as u32 { break; } }
+    }
+
+    fn end_dump(&self) {
+        while let Err(val) = self.state.compare_exchange_weak(
+            AllocState::Dump as u32,
+            AllocState::Normal as u32,
+            AtomicOrdering::SeqCst,
+            AtomicOrdering::Relaxed
+        ) { if val == AllocState::Normal as u32 { break; } }
+    }
+
     fn clear_and_get_stats(&self) -> usize {
         self.count.swap(0, AtomicOrdering::Relaxed)
     }
@@ -34,7 +66,22 @@ impl AllocLogger {
 unsafe impl GlobalAlloc for AllocLogger {
     #[inline(never)]
     unsafe fn alloc(&self, layout: AllocLayout) -> *mut u8 {
-        self.count.fetch_add(1, AtomicOrdering::Relaxed);
+        let state = self.state.swap(AllocState::Alloc as u32, AtomicOrdering::SeqCst);
+        defer!{ 
+            if state != AllocState::Alloc as u32 {
+                self.state.store(state, AtomicOrdering::SeqCst);
+            }
+        }
+
+        if state != AllocState::Alloc as u32 {
+            self.count.fetch_add(1, AtomicOrdering::Relaxed);
+        }
+
+        if state == AllocState::Dump as u32 {
+            let bt = backtrace::Backtrace::new();
+            trace!("{:?}", bt);
+        }
+
         SystemAlloc.alloc(layout)
     }
 
@@ -45,7 +92,9 @@ unsafe impl GlobalAlloc for AllocLogger {
 
 #[global_allocator]
 static ALLOCATOR: AllocLogger = AllocLogger{
-    count: AtomicUsize::new(0)};
+    count: AtomicUsize::new(0),
+    state: AtomicU32::new(AllocState::Normal as u32),
+};
 
 struct Time {
     real: Instant,
@@ -88,6 +137,7 @@ impl Default for Time {
 
 struct CollisionSystemConfig {
     enabled: bool,
+    dump_frame_allocs: bool,
     bounds: Bounds<Point2<f32>>
 }
 
@@ -95,6 +145,7 @@ impl Default for CollisionSystemConfig {
     fn default() -> Self {
         Self{
             enabled: true,
+            dump_frame_allocs: false,
             bounds: Bounds::new(
                 Point2::new(0f32, 0f32),
                 Point2::new(1f32, 1f32))}
@@ -113,6 +164,7 @@ impl CollisionSystemConfig {
     fn from_screen_size((w, h): (u32, u32)) -> Self {
         Self{
             enabled: true,
+            dump_frame_allocs: false,
             bounds: Self::bounds(w, h)}
     }
 
@@ -322,7 +374,7 @@ impl<'a> specs::System<'a> for Collisions {
     type SystemData = (
         specs::Entities<'a>,
         specs::Read<'a, ScreenSize>,
-        specs::Read<'a, CollisionSystemConfig>,
+        specs::Write<'a, CollisionSystemConfig>,
         specs::WriteStorage<'a, VerletPosition>,
         specs::ReadStorage<'a, Radius>,
         specs::WriteStorage<'a, Color>
@@ -330,7 +382,7 @@ impl<'a> specs::System<'a> for Collisions {
 
     #[inline(never)]
     fn run(&mut self, data: Self::SystemData) {
-        let (entities, screen_size, collision_config, mut positions, radii, mut colors) = data;
+        let (entities, screen_size, mut collision_config, mut positions, radii, mut colors) = data;
 
         for color in (&mut colors).join() {
             *color = Color(1f32, 0.5f32, 0f32, 1f32);
@@ -340,6 +392,13 @@ impl<'a> specs::System<'a> for Collisions {
 
         if collision_config.enabled {
             ALLOCATOR.clear_and_get_stats();
+
+            if collision_config.dump_frame_allocs {
+                ALLOCATOR.begin_dump();
+                collision_config.dump_frame_allocs = false;
+            }
+
+            defer!{ALLOCATOR.end_dump();}
 
             self.system.clear();
 
@@ -746,6 +805,12 @@ fn main() {
                                 if key_state == ElementState::Pressed {
                                     let mut collision_config = game_state.world.write_resource::<CollisionSystemConfig>();
                                     collision_config.enabled = !collision_config.enabled;
+                                }
+                            Some(VirtualKeyCode::D) =>
+                                if key_state == ElementState::Pressed {
+                                    let mut collision_config = game_state.world.write_resource::<CollisionSystemConfig>();
+                                    collision_config.dump_frame_allocs = true;
+                                    println!("\nLOGGING ALLOCATIONS (\"TRACE\" LEVEL)\n");
                                 }
                             _ => {}
                         }
