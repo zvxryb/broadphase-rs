@@ -16,11 +16,16 @@ jobs:
       with:
         lfs: true
         submodules: true
-    - name: Cache apt packages
+    - name: Cache cargo registry
       uses: actions/cache@v1
       with:
-        path: /var/cache/apt/archives
-        key: apt-packages
+        path: ~/.cargo/registry
+        key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+    - name: Cache cargo build
+      uses: actions/cache@v1
+      with:
+        path: target
+        key: ${{ runner.os }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
     - name: Update package list
       run: sudo apt-get update
     - name: Install packages
