@@ -552,7 +552,7 @@ where
         C: DerefMut<Target = Vec<(ID, ID)>>,
         F: FnMut(ID, ID) -> bool
     {
-        let mut stack: SmallVec<[(Index, ID); 32]> = SmallVec::new();
+        let mut stack: SmallVec<[(Index, ID); 256]> = SmallVec::new();
         for &(index, id) in tree {
             while let Some(&(index_, _)) = stack.last() {
                 if index.overlaps(index_) {
