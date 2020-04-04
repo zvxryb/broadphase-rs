@@ -636,8 +636,12 @@ impl LayerBuilder {
     /// setting which is too high may result in an excessive number of dynamic allocations and duplication of
     /// intermediate collision pairs, ultimately hurting worst-case performance.
     /// 
-    /// A value of zero is the safest performance-wise for _single-threaded_ operations.  When using multi-threaded
-    /// methods, choose a value that is close to &minus;log<sub>2</sub>[max_object_size/system_bounds_size]
+    /// A value of zero is the safest performance-wise for _single-threaded_ operations.
+    /// 
+    /// When using multi-threaded methods, try a value that between
+    /// _log<sub>4</sub> number_of_processors_ (2D) or
+    /// _log<sub>8</sub> number_of_processors_ (3D) and
+    /// _&minus;log<sub>2</sub>(max_object_size/system_bounds_size)_
     /// 
     /// __It is generally better to set this too low than too high__
     pub fn with_min_depth(&mut self, depth: u32) -> &mut Self {
