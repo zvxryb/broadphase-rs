@@ -6,7 +6,7 @@ readme = "README.md"
 documentation = "https://docs.rs/zvxryb-broadphase"
 repository = "https://github.com/zvxryb/broadphase-rs"
 publish = ["crates-io"]
-version = "0.1.1"
+version = "0.1.2"
 authors = ["Michael Lodato <zvxryb@gmail.com>"]
 edition = "2018"
 
