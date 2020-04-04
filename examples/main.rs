@@ -466,13 +466,14 @@ impl<'a> specs::System<'a> for Collisions {
                         None
                     } else {
                         let d = dist_min - dist;
-                        let n = offset / dist;
+                        let n = if dist > 0.001 { offset / dist } else { Vector2::unit_x() };
                         let u = r1.powi(3) / (r0.powi(3) + r1.powi(3));
                         Some((ent0, ent1, u, n * d))
                     }}));
+            print!("collisions: {:6}  ", self.collisions.len());
 
             let alloc_count = ALLOCATOR.clear_and_get_stats();
-            print!("allocs: {:3}     ", alloc_count);
+            print!("allocs: {:6}  ", alloc_count);
         } else {
             self.collisions.clear();
             for (ent0, pos0, &Radius(r0)) in (&entities, &positions, &radii).join() {
