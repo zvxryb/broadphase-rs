@@ -629,21 +629,35 @@ impl LayerBuilder {
         Self::default()
     }
 
+    /// Set a minimum depth for index generation.
+    /// 
+    /// This parameter is important for parallel processing.  A higher value improves the partitioning of data and
+    /// improves workload balancing.  However, it can also create many more indices/object than is necessary.  A
+    /// setting which is too high may result in an excessive number of dynamic allocations and duplication of
+    /// intermediate collision pairs, ultimately hurting worst-case performance.
+    /// 
+    /// A value of zero is the safest performance-wise for _single-threaded_ operations.  When using multi-threaded
+    /// methods, choose a value that is close to &minus;log<sub>2</sub>[max_object_size/system_bounds_size]
+    /// 
+    /// __It is generally better to set this too low than too high__
     pub fn with_min_depth(&mut self, depth: u32) -> &mut Self {
         self.min_depth = depth;
         self
     }
 
+    /// Set an _initial_ capacity for the index list.
     pub fn with_index_capacity(&mut self, capacity: usize) -> &mut Self {
         self.index_capacity = Some(capacity);
         self
     }
 
+    /// Set an _initial_ capacity for the collision results list, used by `Layer::scan`.
     pub fn with_collision_capacity(&mut self, capacity: usize) -> &mut Self {
         self.collision_capacity = Some(capacity);
         self
     }
 
+    /// Set an _initial_ capacity for the test results list, used by `Layer::test` and `Layer::pick`.
     pub fn with_test_capacity(&mut self, capacity: usize) -> &mut Self {
         self.test_capacity = Some(capacity);
         self

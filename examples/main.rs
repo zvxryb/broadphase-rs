@@ -362,7 +362,7 @@ impl Collisions {
     fn new() -> Self {
         Self {
             system: broadphase::LayerBuilder::new()
-                .with_min_depth(6)
+                .with_min_depth(4)
                 .build(),
             collisions: Vec::new(),
         }
