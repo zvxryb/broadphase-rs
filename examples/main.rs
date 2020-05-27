@@ -572,14 +572,14 @@ impl InstanceBuffer {
 }
 
 struct OffscreenTarget {
-    texture: glium::Texture2d,
+    texture: glium::texture::SrgbTexture2d,
     pbo: Option<glium::texture::pixel_buffer::PixelBuffer<(u8, u8, u8, u8)>>,
 }
 
 impl OffscreenTarget {
     fn with_size(display: &glium::Display, w: u32, h: u32) -> Option<Self> {
-        let texture = match glium::Texture2d::empty_with_format(display,
-            glium::texture::UncompressedFloatFormat::U8U8U8U8,
+        let texture = match glium::texture::SrgbTexture2d::empty_with_format(display,
+            glium::texture::SrgbFormat::U8U8U8U8,
             glium::texture::MipmapsOption::NoMipmap,
             w, h)
         {
@@ -649,7 +649,7 @@ impl AsyncReadback {
         Self{ on_frame_data, frames, i: 0 }
     }
 
-    fn with_surface<Draw: FnMut(&mut glium::framebuffer::SimpleFrameBuffer)>(&mut self, mut draw: Draw) {
+    fn with_surface<Draw: FnMut(&mut glium::framebuffer::SimpleFrameBuffer)>(&mut self, display: &glium::Display, mut draw: Draw) {
         let frame = &mut self.frames[self.i];
         if let Some(pbo) = &mut frame.pbo {
             let w = frame.texture.width();
@@ -659,7 +659,9 @@ impl AsyncReadback {
             let data = unsafe { std::slice::from_raw_parts((*pbo.map_read()).as_ptr() as *const u8, bytes) };
             (self.on_frame_data)(w, h, data);
         }
-        draw(&mut frame.texture.as_surface());
+        let mut fbo = glium::framebuffer::SimpleFrameBuffer::new(display, &frame.texture)
+            .expect("failed to create framebuffer");
+        draw(&mut fbo);
         frame.pbo = Some(frame.texture.read_to_pixel_buffer());
         self.i += 1;
         self.i = self.i % ASYNC_READBACK_FRAMES;
@@ -925,7 +927,7 @@ fn main() {
                                 }
                             Some(VirtualKeyCode::Snapshot) =>
                                 if key_state == ElementState::Pressed {
-                                    screenshots.with_surface(|surface| {
+                                    screenshots.with_surface(&display, |surface| {
                                         game_state.draw(&mut renderer, &display, surface);
                                     });
                                     screenshots.flush();
