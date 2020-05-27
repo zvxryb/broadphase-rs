@@ -4,6 +4,7 @@ extern crate zvxryb_broadphase as broadphase;
 extern crate backtrace;
 extern crate cgmath;
 extern crate env_logger;
+extern crate png;
 extern crate rand;
 extern crate specs;
 
@@ -570,6 +571,118 @@ impl InstanceBuffer {
     }
 }
 
+struct OffscreenTarget {
+    texture: glium::Texture2d,
+    pbo: Option<glium::texture::pixel_buffer::PixelBuffer<(u8, u8, u8, u8)>>,
+}
+
+impl OffscreenTarget {
+    fn with_size(display: &glium::Display, w: u32, h: u32) -> Option<Self> {
+        let texture = match glium::Texture2d::empty_with_format(display,
+            glium::texture::UncompressedFloatFormat::U8U8U8U8,
+            glium::texture::MipmapsOption::NoMipmap,
+            w, h)
+        {
+            Ok(texture) => texture,
+            Err(_) => return None,
+        };
+        Some(Self{ texture, pbo: None })
+    }
+}
+
+const ASYNC_READBACK_FRAMES: usize = 3;
+
+struct AsyncReadback {
+    on_frame_data: Box<dyn FnMut(u32, u32, &[u8])>,
+    frames: [OffscreenTarget; ASYNC_READBACK_FRAMES],
+    i: usize,
+}
+
+impl AsyncReadback {
+    fn png_writer(display: &glium::Display, w: u32, h: u32, base: std::path::PathBuf) -> Self {
+        let on_frame_data = Box::new(move |w: u32, h: u32, data: &[u8]| {
+            static INDEX: AtomicU32 = AtomicU32::new(0);
+            let (path, f) = loop {
+                let path = base.with_file_name(format!("{}_{:05}.{}",
+                    base.file_stem().and_then(|s| s.to_str()).unwrap_or("default"),
+                    INDEX.fetch_add(1, AtomicOrdering::Relaxed),
+                    base.extension().and_then(|s| s.to_str()).unwrap_or("png")));
+                match std::fs::File::create(path.clone()) {
+                    Ok(f) => break (path, f),
+                    Err(e) => match e.kind() {
+                        std::io::ErrorKind::AlreadyExists => {},
+                        _ => {
+                            error!("Failed to create {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
+                            return;
+                        }
+                    },
+                };
+            };
+            let mut encoder = png::Encoder::new(f, w, h);
+            encoder.set_color(png::ColorType::RGBA);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = match encoder.write_header() {
+                Ok(writer) => writer,
+                Err(e) => {
+                    error!("Failed to write PNG header for {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
+                    return;
+                },
+            };
+            let mut writer = writer.stream_writer();
+            for y in 0..h {
+                use std::io::Write;
+                let y_ = h-y-1;
+                let i0 = 4 * (w *  y_     ) as usize;
+                let i1 = 4 * (w * (y_ + 1)) as usize;
+                if let Err(e) = writer.write_all(&data[i0..i1]) {
+                    error!("Failed to encode PNG data for {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
+                }
+            }
+        });
+
+        let frames = [
+            OffscreenTarget::with_size(display, w, h).unwrap(),
+            OffscreenTarget::with_size(display, w, h).unwrap(),
+            OffscreenTarget::with_size(display, w, h).unwrap(),
+        ];
+
+        Self{ on_frame_data, frames, i: 0 }
+    }
+
+    fn with_surface<Draw: FnMut(&mut glium::framebuffer::SimpleFrameBuffer)>(&mut self, mut draw: Draw) {
+        let frame = &mut self.frames[self.i];
+        if let Some(pbo) = &mut frame.pbo {
+            let w = frame.texture.width();
+            let h = frame.texture.height();
+            let bytes = 4 * w as usize * h as usize;
+            assert_eq!(bytes, pbo.get_size());
+            let data = unsafe { std::slice::from_raw_parts((*pbo.map_read()).as_ptr() as *const u8, bytes) };
+            (self.on_frame_data)(w, h, data);
+        }
+        draw(&mut frame.texture.as_surface());
+        frame.pbo = Some(frame.texture.read_to_pixel_buffer());
+        self.i += 1;
+        self.i = self.i % ASYNC_READBACK_FRAMES;
+    }
+
+    fn flush(&mut self) {
+        for _ in 0..ASYNC_READBACK_FRAMES {
+            let frame = &mut self.frames[self.i];
+            if let Some(pbo) = &mut frame.pbo {
+                let w = frame.texture.width();
+                let h = frame.texture.height();
+                let bytes = 4 * w as usize * h as usize;
+                assert_eq!(bytes, pbo.get_size());
+                let data = unsafe { std::slice::from_raw_parts((*pbo.map_read()).as_ptr() as *const u8, bytes) };
+                (self.on_frame_data)(w, h, data);
+            }
+            frame.pbo = None;
+            self.i += 1;
+            self.i = self.i % ASYNC_READBACK_FRAMES;
+        }
+    }
+}
+
 struct Renderer {
     program_main: glium::Program,
     screen_size : [f32; 2],
@@ -656,20 +769,19 @@ impl Renderer {
         self.circles.write(display, circles);
     }
 
-    fn draw(&self, frame: &mut glium::Frame) {
-        use glium::Surface;
+    fn draw<Surf: glium::Surface>(&self, surface: &mut Surf) {
         let params = glium::DrawParameters{
             .. Default::default()
         };
         let uniforms = uniform!{
             screen_size: self.screen_size
         };
-        frame.draw(
+        surface.draw(
             (&self.vbo_circle, self.circles.slice().per_instance().unwrap()),
             glium::index::NoIndices(glium::index::PrimitiveType::LineLoop),
             &self.program_main, &uniforms, &params)
             .expect("failed to draw circles");
-        frame.draw(
+        surface.draw(
             (&self.vbo_box, self.boxes.slice().per_instance().unwrap()),
             glium::index::NoIndices(glium::index::PrimitiveType::LineLoop),
             &self.program_main, &uniforms, &params)
@@ -716,10 +828,8 @@ impl GameState {
     }
 
     #[inline(never)]
-    fn draw(&mut self, renderer: &mut Renderer, display: &glium::Display) {
-        use glium::Surface;
-        let mut frame = display.draw();
-        frame.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
+    fn draw<Surf: glium::Surface>(&mut self, renderer: &mut Renderer, display: &glium::Display, surface: &mut Surf) {
+        surface.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
 
         let time = self.world.get_mut::<Time>().unwrap();
 
@@ -760,9 +870,7 @@ impl GameState {
         } else { Vec::default() };
         renderer.update_boxes(display, boxes.as_slice());
 
-        renderer.draw(&mut frame);
-
-        frame.finish().unwrap();
+        renderer.draw(surface);
     }
 }
 
@@ -783,9 +891,11 @@ fn main() {
     let display = glium::Display::new(window_builder, context, &events_loop)
         .expect("failed to create display");
 
-    let mut renderer = Renderer::from_display(&display);
-    let mut game_state = GameState::new();
     let screen_size = display.get_framebuffer_dimensions();
+
+    let mut renderer = Renderer::from_display(&display);
+    let mut screenshots = AsyncReadback::png_writer(&display, screen_size.0, screen_size.1, std::path::PathBuf::from("./screenshots/example"));
+    let mut game_state = GameState::new();
     game_state.world.insert(Time::default());
     game_state.world.insert(ScreenSize::from(screen_size));
     game_state.world.insert(CollisionSystemConfig::from_screen_size(screen_size));
@@ -813,6 +923,13 @@ fn main() {
                                     collision_config.dump_frame_allocs = true;
                                     println!("\nLOGGING ALLOCATIONS (\"TRACE\" LEVEL)\n");
                                 }
+                            Some(VirtualKeyCode::Snapshot) =>
+                                if key_state == ElementState::Pressed {
+                                    screenshots.with_surface(|surface| {
+                                        game_state.draw(&mut renderer, &display, surface);
+                                    });
+                                    screenshots.flush();
+                                }
                             _ => {}
                         }
                     _ => {}
@@ -820,6 +937,7 @@ fn main() {
             Event::WindowEvent{event, ..} => {
                 match event {
                     WindowEvent::CloseRequested => {
+                        screenshots.flush();
                         *control = glutin::event_loop::ControlFlow::Exit;
                     }
                     WindowEvent::Resized(size) => {
@@ -828,6 +946,8 @@ fn main() {
                         game_state.world.get_mut::<CollisionSystemConfig>().unwrap()
                             .update_bounds(size.width, size.height);
                         display.gl_window().window().request_redraw();
+                        screenshots.flush();
+                        screenshots = AsyncReadback::png_writer(&display, size.width, size.height, std::path::PathBuf::from("./screenshots/example"));
                     }
                     _ => {}
                 }
@@ -837,7 +957,9 @@ fn main() {
                 display.gl_window().window().request_redraw();
             }
             Event::RedrawRequested(..) => {
-                game_state.draw(&mut renderer, &display);
+                let mut frame = display.draw();
+                game_state.draw(&mut renderer, &display, &mut frame);
+                frame.finish().unwrap();
             }
             _ => {}
         }
