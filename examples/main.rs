@@ -4,6 +4,7 @@ extern crate zvxryb_broadphase as broadphase;
 extern crate backtrace;
 extern crate cgmath;
 extern crate env_logger;
+extern crate itertools;
 extern crate png;
 extern crate rand;
 extern crate specs;
@@ -19,12 +20,17 @@ extern crate log;
 #[macro_use(defer)]
 extern crate scopeguard;
 
+#[macro_use]
+extern crate smallvec;
+
 use cgmath::prelude::*;
 use rand::prelude::*;
 use specs::prelude::*;
 
 use broadphase::Bounds;
 use cgmath::{Point2, Vector2};
+use itertools::Itertools;
+use smallvec::SmallVec;
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System as SystemAlloc};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
@@ -796,6 +802,7 @@ struct GameState {
     lifecycle: Lifecycle,
     kinematics: Kinematics,
     collisions: Collisions,
+    show_scan: Option<(broadphase::Index32_2D, specs::world::Index)>,
 }
 
 impl GameState {
@@ -810,6 +817,7 @@ impl GameState {
             lifecycle: Lifecycle {},
             kinematics: Kinematics {},
             collisions: Collisions::new(),
+            show_scan: None,
         }
     }
 }
@@ -817,15 +825,17 @@ impl GameState {
 impl GameState {
     #[inline(never)]
     fn update(&mut self) {
-        let step = Duration::from_micros(Self::FRAME_TIME_US as u64);
-        let max_delta = Duration::from_micros(Self::MAX_FRAME_TIME_US as u64);
-        self.world.get_mut::<Time>().unwrap().update(step, max_delta);
-
-        while self.world.get_mut::<Time>().unwrap().step() {
-            self.lifecycle.run_now(&self.world);
-            self.world.maintain();
-            self.kinematics.run_now(&self.world);
-            self.collisions.run_now(&self.world);
+        if let None = self.show_scan {
+            let step = Duration::from_micros(Self::FRAME_TIME_US as u64);
+            let max_delta = Duration::from_micros(Self::MAX_FRAME_TIME_US as u64);
+            self.world.get_mut::<Time>().unwrap().update(step, max_delta);
+    
+            while self.world.get_mut::<Time>().unwrap().step() {
+                self.lifecycle.run_now(&self.world);
+                self.world.maintain();
+                self.kinematics.run_now(&self.world);
+                self.collisions.run_now(&self.world);
+            }
         }
     }
 
@@ -833,46 +843,163 @@ impl GameState {
     fn draw<Surf: glium::Surface>(&mut self, renderer: &mut Renderer, display: &glium::Display, surface: &mut Surf) {
         surface.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
 
-        let time = self.world.get_mut::<Time>().unwrap();
+        if let Some(next) = self.show_scan {
+            std::thread::sleep_ms(33);
 
-        let t = time.remainder();
-        let u: f32 = ((t.as_secs() as f32) * 1_000_000f32 + (t.subsec_micros() as f32))
-            / (Self::FRAME_TIME_US as f32);
-
-        let circles: Vec<_> = {
-            let positions = self.world.read_storage::<VerletPosition>();
-            let radii     = self.world.read_storage::<Radius>();
-            let colors    = self.world.read_storage::<Color>();
-
-            (&positions, &radii, &colors).join()
-                .map(|(&pos, &Radius(r), &color)|
-                    InstanceData{
-                        origin: (pos.1 + (pos.1 - pos.0) * u).into(),
-                        scale : [r, r],
-                        color : color.into(),
-                    })
-                .collect()
-        };
-        renderer.update_circles(display, circles.as_slice());
-
-        let collision_config = self.world.read_resource::<CollisionSystemConfig>();
-        let boxes: Vec<_> = if collision_config.enabled {
-            self.collisions.system.iter()
-                .map(|&(index, _)| {
-                    use broadphase::SystemBounds;
-                    let local: Bounds<_> = index.into();
-                    let global = collision_config.bounds.to_global(local);
-                    InstanceData{
-                        origin: global.center().to_vec().into(),
-                        scale : global.sizef().into(),
-                        color : [0.3, 0.3, 0.3, 1.0],
+            // this is effectively a duplicate of Layer::scan_impl, with a few modifications for visualization
+            // meant for illustration only, as it may diverge from scan_impl in the future
+            use broadphase::SpatialIndex;
+            let mut stack     : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
+            let mut dropped   : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
+            let mut collisions: SmallVec<[specs::world::Index; 256]> = SmallVec::new();
+            for &pair in self.collisions.system.iter() {
+                let (index, id) = pair;
+                while let Some(&(index_, _)) = stack.last() {
+                    if index.overlaps(index_) {
+                        break;
                     }
-                })
-                .collect()
-        } else { Vec::default() };
-        renderer.update_boxes(display, boxes.as_slice());
+                    if let Some(dropped_) = stack.pop() {
+                        if pair == next { dropped.push(dropped_); }
+                    }
+                }
+                if stack.iter().any(|&(_, id_)| id == id_) {
+                    continue;
+                }
+                for &(_, id_) in &stack {
+                    if id != id_ && pair == next {
+                        collisions.push(id_);
+                    }
+                }
+                stack.push((index, id))
+            }
 
-        renderer.draw(surface);
+            #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
+            enum ScanState {
+                Ignored,
+                Dropped,
+                Collided,
+                Selected,
+            }
+
+            impl ScanState {
+                fn color(&self) -> [f32; 4] {
+                    match self {
+                        ScanState::Selected => [1.0, 0.8, 0.0, 1.0],
+                        ScanState::Collided => [1.0, 0.0, 0.0, 1.0],
+                        ScanState::Dropped  => [0.0, 0.3, 1.0, 1.0],
+                        ScanState::Ignored  => [0.2, 0.2, 0.2, 1.0],
+                    }
+                }
+            }
+
+            let circles: Vec<_> = {
+                let ents      = self.world.entities();
+                let positions = self.world.read_storage::<VerletPosition>();
+                let radii     = self.world.read_storage::<Radius>();
+
+                (&ents, &positions, &radii).join()
+                    .map(|(ent, &pos, &Radius(r))|
+                        InstanceData{
+                            origin: pos.1.into(),
+                            scale : [r, r],
+                            color : if ent.id() == next.1 {
+                                ScanState::Selected
+                            } else if collisions.contains(&ent.id()) {
+                                ScanState::Collided
+                            } else if dropped.iter().any(|&(_, id_)| ent.id() == id_) {
+                                ScanState::Dropped
+                            } else {
+                                ScanState::Ignored
+                            }.color(),
+                        })
+                    .collect()
+            };
+            renderer.update_circles(display, circles.as_slice());
+
+            let collision_config = self.world.read_resource::<CollisionSystemConfig>();
+            let boxes: Vec<_> = if collision_config.enabled {
+                self.collisions.system.iter()
+                    .map(|&(index, id)|
+                        {
+                            let state = if id == next.1 {
+                                ScanState::Selected
+                            } else if stack.contains(&(index, id)) {
+                                ScanState::Collided
+                            } else if stack.contains(&(index, id)) {
+                                ScanState::Dropped
+                            } else {
+                                ScanState::Ignored
+                            };
+                            (index, state)
+                        }
+                    )
+                    .coalesce(|l, r|
+                        if l.0 == r.0 {
+                            Ok((l.0, std::cmp::max(l.1, r.1)))
+                        } else {
+                            Err((l, r))
+                        }
+                    )
+                    .sorted_by_key(|&(_, state)| state)
+                    .map(|(index, state)| {
+                        use broadphase::SystemBounds;
+                        let local: Bounds<_> = index.into();
+                        let global = collision_config.bounds.to_global(local);
+                        InstanceData{
+                            origin: global.center().to_vec().into(),
+                            scale : global.sizef().into(),
+                            color : state.color(),
+                        }
+                    })
+                    .collect()
+            } else { Vec::default() };
+            renderer.update_boxes(display, boxes.as_slice());
+
+            renderer.draw(surface);
+
+            self.show_scan = self.collisions.system.iter().skip_while(|&&pair| pair <= next).next().cloned();
+        } else {
+            let time = self.world.get_mut::<Time>().unwrap();
+    
+            let t = time.remainder();
+            let u: f32 = ((t.as_secs() as f32) * 1_000_000f32 + (t.subsec_micros() as f32))
+                / (Self::FRAME_TIME_US as f32);
+    
+            let circles: Vec<_> = {
+                let positions = self.world.read_storage::<VerletPosition>();
+                let radii     = self.world.read_storage::<Radius>();
+                let colors    = self.world.read_storage::<Color>();
+    
+                (&positions, &radii, &colors).join()
+                    .map(|(&pos, &Radius(r), &color)|
+                        InstanceData{
+                            origin: (pos.1 + (pos.1 - pos.0) * u).into(),
+                            scale : [r, r],
+                            color : color.into(),
+                        })
+                    .collect()
+            };
+            renderer.update_circles(display, circles.as_slice());
+    
+            let collision_config = self.world.read_resource::<CollisionSystemConfig>();
+            let boxes: Vec<_> = if collision_config.enabled {
+                self.collisions.system.iter()
+                    .map(|&(index, _)| {
+                        use broadphase::SystemBounds;
+                        let local: Bounds<_> = index.into();
+                        let global = collision_config.bounds.to_global(local);
+                        InstanceData{
+                            origin: global.center().to_vec().into(),
+                            scale : global.sizef().into(),
+                            color : [0.3, 0.3, 0.3, 1.0],
+                        }
+                    })
+                    .collect()
+            } else { Vec::default() };
+            renderer.update_boxes(display, boxes.as_slice());
+
+            renderer.draw(surface);
+        }
     }
 }
 
@@ -924,6 +1051,14 @@ fn main() {
                                     let mut collision_config = game_state.world.write_resource::<CollisionSystemConfig>();
                                     collision_config.dump_frame_allocs = true;
                                     println!("\nLOGGING ALLOCATIONS (\"TRACE\" LEVEL)\n");
+                                }
+                            Some(VirtualKeyCode::V) =>
+                                if key_state == ElementState::Pressed {
+                                    if game_state.show_scan.is_none() {
+                                        game_state.show_scan = game_state.collisions.system.iter().next().cloned();
+                                    }
+                                } else {
+                                    game_state.show_scan = None
                                 }
                             Some(VirtualKeyCode::Snapshot) =>
                                 if key_state == ElementState::Pressed {
