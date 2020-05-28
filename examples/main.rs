@@ -301,9 +301,9 @@ impl<'a> specs::System<'a> for Lifecycle {
             }
         }
 
-        const BALL_COUNT_MAX: u32 = 500;
-        const LIFETIME_MIN_MS: u32 = 2000;
-        const LIFETIME_MAX_MS: u32 = 10000;
+        const BALL_COUNT_MAX: u32 = 2500;
+        const LIFETIME_MIN_MS: u32 = 10000;
+        const LIFETIME_MAX_MS: u32 = 50000;
         for _ in 0..std::cmp::max(BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS, 1) {
             if ball_count.0 >= BALL_COUNT_MAX {
                 break;
@@ -311,7 +311,7 @@ impl<'a> specs::System<'a> for Lifecycle {
             let lifetime = Duration::from_millis(rand::thread_rng().gen_range(
                 LIFETIME_MIN_MS as u64, LIFETIME_MAX_MS as u64));
 
-                let r = rand::thread_rng().gen_range(1.0f32, 3.0f32).exp();
+                let r = rand::thread_rng().gen_range(0.5f32, 2.0f32).exp();
 
             let x0 = 0f32 + r;
             let x1 = screen_size.0 as f32 - 2f32 * r + x0;
