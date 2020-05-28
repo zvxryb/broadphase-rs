@@ -301,9 +301,9 @@ impl<'a> specs::System<'a> for Lifecycle {
             }
         }
 
-        const BALL_COUNT_MAX: u32 = 2500;
-        const LIFETIME_MIN_MS: u32 = 10000;
-        const LIFETIME_MAX_MS: u32 = 50000;
+        const BALL_COUNT_MAX: u32 = 500;
+        const LIFETIME_MIN_MS: u32 = 2000;
+        const LIFETIME_MAX_MS: u32 = 10000;
         for _ in 0..BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS {
             if ball_count.0 >= BALL_COUNT_MAX {
                 break;
@@ -311,7 +311,7 @@ impl<'a> specs::System<'a> for Lifecycle {
             let lifetime = Duration::from_millis(rand::thread_rng().gen_range(
                 LIFETIME_MIN_MS as u64, LIFETIME_MAX_MS as u64));
 
-            let r = rand::thread_rng().gen_range(0.5f32, 2.0f32).exp();
+            let r = rand::thread_rng().gen_range(1.0f32, 3.0f32).exp();
 
             let x0 = 0f32 + r;
             let x1 = screen_size.0 as f32 - 2f32 * r + x0;
@@ -732,7 +732,7 @@ impl Renderer {
                 out vec4 f_color;
 
                 void main() {
-                    f_color = vec4(v_color.rgb, 1.0);
+                    f_color = v_color;
                 }
             "#,
             None)
@@ -779,6 +779,13 @@ impl Renderer {
 
     fn draw<Surf: glium::Surface>(&self, surface: &mut Surf) {
         let params = glium::DrawParameters{
+            blend: glium::Blend{
+                color: glium::BlendingFunction::Addition{
+                    source: glium::LinearBlendingFactor::SourceAlpha,
+                    destination: glium::LinearBlendingFactor::One,
+                },
+                ..Default::default()
+            },
             .. Default::default()
         };
         let uniforms = uniform!{
@@ -849,9 +856,9 @@ impl GameState {
             // this is effectively a duplicate of Layer::scan_impl, with a few modifications for visualization
             // meant for illustration only, as it may diverge from scan_impl in the future
             use broadphase::SpatialIndex;
-            let mut stack     : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
-            let mut dropped   : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
-            let mut collisions: SmallVec<[specs::world::Index; 256]> = SmallVec::new();
+            let mut stack   : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
+            let mut dropped : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
+            let mut collided: SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
             for &pair in self.collisions.system.iter() {
                 let (index, id) = pair;
                 while let Some(&(index_, _)) = stack.last() {
@@ -865,10 +872,8 @@ impl GameState {
                 if stack.iter().any(|&(_, id_)| id == id_) {
                     continue;
                 }
-                for &(_, id_) in &stack {
-                    if id != id_ && pair == next {
-                        collisions.push(id_);
-                    }
+                if pair == next {
+                    collided.extend(stack.iter().cloned());
                 }
                 stack.push((index, id))
             }
@@ -884,10 +889,10 @@ impl GameState {
             impl ScanState {
                 fn color(&self) -> [f32; 4] {
                     match self {
-                        ScanState::Selected => [1.0, 0.8, 0.0, 1.0],
-                        ScanState::Collided => [1.0, 0.0, 0.0, 1.0],
-                        ScanState::Dropped  => [0.0, 0.3, 1.0, 1.0],
-                        ScanState::Ignored  => [0.2, 0.2, 0.2, 1.0],
+                        ScanState::Selected => [0.0, 1.0, 0.0, 1.0],
+                        ScanState::Collided => [1.0, 0.0, 0.0, 0.5],
+                        ScanState::Dropped  => [0.0, 0.0, 1.0, 0.5],
+                        ScanState::Ignored  => [1.0, 1.0, 1.0, 0.02],
                     }
                 }
             }
@@ -904,7 +909,7 @@ impl GameState {
                             scale : [r, r],
                             color : if ent.id() == next.1 {
                                 ScanState::Selected
-                            } else if collisions.contains(&ent.id()) {
+                            } else if collided.iter().any(|&(_, id_)| ent.id() == id_) {
                                 ScanState::Collided
                             } else if dropped.iter().any(|&(_, id_)| ent.id() == id_) {
                                 ScanState::Dropped
@@ -923,9 +928,9 @@ impl GameState {
                         {
                             let state = if id == next.1 {
                                 ScanState::Selected
-                            } else if stack.contains(&(index, id)) {
+                            } else if collided.contains(&(index, id)) {
                                 ScanState::Collided
-                            } else if stack.contains(&(index, id)) {
+                            } else if dropped.contains(&(index, id)) {
                                 ScanState::Dropped
                             } else {
                                 ScanState::Ignored
@@ -991,7 +996,7 @@ impl GameState {
                         InstanceData{
                             origin: global.center().to_vec().into(),
                             scale : global.sizef().into(),
-                            color : [0.3, 0.3, 0.3, 1.0],
+                            color : [1.0, 1.0, 1.0, 0.02],
                         }
                     })
                     .collect()
