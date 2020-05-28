@@ -304,14 +304,14 @@ impl<'a> specs::System<'a> for Lifecycle {
         const BALL_COUNT_MAX: u32 = 500;
         const LIFETIME_MIN_MS: u32 = 2000;
         const LIFETIME_MAX_MS: u32 = 10000;
-        for _ in 0..BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS {
+        for _ in 0..std::cmp::max(BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS, 1) {
             if ball_count.0 >= BALL_COUNT_MAX {
                 break;
             }
             let lifetime = Duration::from_millis(rand::thread_rng().gen_range(
                 LIFETIME_MIN_MS as u64, LIFETIME_MAX_MS as u64));
 
-            let r = rand::thread_rng().gen_range(1.0f32, 3.0f32).exp();
+                let r = rand::thread_rng().gen_range(1.0f32, 3.0f32).exp();
 
             let x0 = 0f32 + r;
             let x1 = screen_size.0 as f32 - 2f32 * r + x0;
@@ -644,6 +644,9 @@ impl AsyncReadback {
                     error!("Failed to encode PNG data for {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
                 }
             }
+            if let Err(e) = writer.finish() {
+                error!("Failed to finish encoding PNG image {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
+            }
         });
 
         let frames = [
@@ -671,6 +674,12 @@ impl AsyncReadback {
         frame.pbo = Some(frame.texture.read_to_pixel_buffer());
         self.i += 1;
         self.i = self.i % ASYNC_READBACK_FRAMES;
+    }
+
+    fn discard(&mut self) {
+        for frame in self.frames.iter_mut() {
+            frame.pbo = None;
+        }
     }
 
     fn flush(&mut self) {
@@ -784,8 +793,13 @@ impl Renderer {
                     source: glium::LinearBlendingFactor::SourceAlpha,
                     destination: glium::LinearBlendingFactor::One,
                 },
+                alpha: glium::BlendingFunction::Addition{
+                    source: glium::LinearBlendingFactor::Zero,
+                    destination: glium::LinearBlendingFactor::One,
+                },
                 ..Default::default()
             },
+            smooth: Some(glium::Smooth::Nicest),
             .. Default::default()
         };
         let uniforms = uniform!{
@@ -832,7 +846,9 @@ impl GameState {
 impl GameState {
     #[inline(never)]
     fn update(&mut self) {
-        if let None = self.show_scan {
+        if let Some(next) = self.show_scan {
+            self.show_scan = self.collisions.system.iter().skip_while(|&&pair| pair <= next).next().cloned();
+        } else {
             let step = Duration::from_micros(Self::FRAME_TIME_US as u64);
             let max_delta = Duration::from_micros(Self::MAX_FRAME_TIME_US as u64);
             self.world.get_mut::<Time>().unwrap().update(step, max_delta);
@@ -851,8 +867,6 @@ impl GameState {
         surface.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
 
         if let Some(next) = self.show_scan {
-            std::thread::sleep_ms(33);
-
             // this is effectively a duplicate of Layer::scan_impl, with a few modifications for visualization
             // meant for illustration only, as it may diverge from scan_impl in the future
             use broadphase::SpatialIndex;
@@ -926,7 +940,7 @@ impl GameState {
                 self.collisions.system.iter()
                     .map(|&(index, id)|
                         {
-                            let state = if id == next.1 {
+                            let state = if index == next.0 {
                                 ScanState::Selected
                             } else if collided.contains(&(index, id)) {
                                 ScanState::Collided
@@ -961,8 +975,6 @@ impl GameState {
             renderer.update_boxes(display, boxes.as_slice());
 
             renderer.draw(surface);
-
-            self.show_scan = self.collisions.system.iter().skip_while(|&&pair| pair <= next).next().cloned();
         } else {
             let time = self.world.get_mut::<Time>().unwrap();
     
@@ -1020,8 +1032,7 @@ fn main() {
         .with_resizable(true);
     let context = glutin::ContextBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (4, 5)))
-        .with_gl_profile(glutin::GlProfile::Core)
-        .with_multisampling(4);
+        .with_gl_profile(glutin::GlProfile::Core);
     let display = glium::Display::new(window_builder, context, &events_loop)
         .expect("failed to create display");
 
@@ -1038,6 +1049,15 @@ fn main() {
     game_state.world.register::<VerletPosition>();
     game_state.world.register::<Radius>();
     game_state.world.register::<Color>();
+
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    enum RecordingState {
+        NotRecording,
+        Waiting(Instant),
+        Recording,
+    }
+
+    let mut recording = RecordingState::NotRecording;
 
     events_loop.run(move |event, _window_target, control| {
         use crate::glutin::event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent};
@@ -1067,10 +1087,16 @@ fn main() {
                                 }
                             Some(VirtualKeyCode::Snapshot) =>
                                 if key_state == ElementState::Pressed {
-                                    screenshots.with_surface(&display, |surface| {
-                                        game_state.draw(&mut renderer, &display, surface);
-                                    });
+                                    if recording == RecordingState::NotRecording {
+                                        screenshots.discard();
+                                        screenshots.with_surface(&display, |surface| {
+                                            game_state.draw(&mut renderer, &display, surface);
+                                        });
+                                        recording = RecordingState::Waiting(Instant::now() + Duration::from_secs(1));
+                                    }
+                                } else {
                                     screenshots.flush();
+                                    recording = RecordingState::NotRecording;
                                 }
                             _ => {}
                         }
@@ -1096,6 +1122,17 @@ fn main() {
             }
             Event::MainEventsCleared => {
                 game_state.update();
+                if let RecordingState::Waiting(start) = recording {
+                    if Instant::now() > start {
+                        screenshots.discard();
+                        recording = RecordingState::Recording;
+                    }
+                }
+                if recording == RecordingState::Recording {
+                    screenshots.with_surface(&display, |surface| {
+                        game_state.draw(&mut renderer, &display, surface);
+                    });
+                }
                 display.gl_window().window().request_redraw();
             }
             Event::RedrawRequested(..) => {
