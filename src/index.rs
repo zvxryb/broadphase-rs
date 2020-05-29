@@ -313,7 +313,7 @@ impl Debug for Index32_2D {
         let Self(index) = self;
         let origin_bits = (index & Self::ORIGIN_MASK) >> Self::ORIGIN_SHIFT;
         let origin = self.origin();
-        write!(f, "Index32_2D{{origin={{0x{:011x}, <0x{:04x}, 0x{:04x}>}}, depth={:}}}",
+        write!(f, "Index32_2D{{origin={{0x{:07x}, <0x{:08x}, 0x{:08x}>}}, depth={:}}}",
             origin_bits,
             origin.x,
             origin.y,
@@ -326,8 +326,8 @@ impl Debug for Index64_2D {
         let Self(index) = self;
         let origin_bits = (index & Self::ORIGIN_MASK) >> Self::ORIGIN_SHIFT;
         let origin = self.origin();
-        write!(f, "Index64_2D{{origin={{0x{:022x}, <0x{:08x}, 0x{:08x}>}}, depth={:}}}",
-            origin_bits,
+        write!(f, "Index64_2D{{origin={{0x{:015x}, <0x{:08x}, 0x{:08x}>}}, depth={:}}}",
+            origin_bits << 2,
             origin.x,
             origin.y,
             self.depth())
