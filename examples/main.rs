@@ -580,6 +580,7 @@ impl InstanceBuffer {
 struct OffscreenTarget {
     texture: glium::texture::SrgbTexture2d,
     pbo: Option<glium::texture::pixel_buffer::PixelBuffer<(u8, u8, u8, u8)>>,
+    meta: Vec<u8>,
 }
 
 impl OffscreenTarget {
@@ -592,60 +593,76 @@ impl OffscreenTarget {
             Ok(texture) => texture,
             Err(_) => return None,
         };
-        Some(Self{ texture, pbo: None })
+        Some(Self{ texture, pbo: None, meta: Vec::new() })
     }
 }
 
 const ASYNC_READBACK_FRAMES: usize = 3;
 
 struct AsyncReadback {
-    on_frame_data: Box<dyn FnMut(u32, u32, &[u8])>,
+    on_frame_data: Box<dyn FnMut(u32, u32, &[u8], &str)>,
     frames: [OffscreenTarget; ASYNC_READBACK_FRAMES],
     i: usize,
 }
 
 impl AsyncReadback {
     fn png_writer(display: &glium::Display, w: u32, h: u32, base: std::path::PathBuf) -> Self {
-        let on_frame_data = Box::new(move |w: u32, h: u32, data: &[u8]| {
+        use std::io::Write;
+        let on_frame_data = Box::new(move |w: u32, h: u32, data: &[u8], meta: &str| {
             static INDEX: AtomicU32 = AtomicU32::new(0);
-            let (path, f) = loop {
-                let path = base.with_file_name(format!("{}_{:05}.{}",
+            let (path_png, path_txt, f_png, mut f_txt) = loop {
+                let path_png = base.with_file_name(format!("{}_{:05}.{}",
                     base.file_stem().and_then(|s| s.to_str()).unwrap_or("default"),
                     INDEX.fetch_add(1, AtomicOrdering::Relaxed),
                     base.extension().and_then(|s| s.to_str()).unwrap_or("png")));
-                match std::fs::File::create(path.clone()) {
-                    Ok(f) => break (path, f),
-                    Err(e) => match e.kind() {
-                        std::io::ErrorKind::AlreadyExists => {},
-                        _ => {
-                            error!("Failed to create {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
-                            return;
-                        }
+                let path_txt = path_png.with_extension("txt");
+                if !path_png.exists() && !path_txt.exists() {
+                    break (path_png.clone(), path_txt.clone(),
+                        match std::fs::File::create(path_png.clone()) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                error!("Failed to create {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
+                                return;
+                            }
+                        },
+                        match std::fs::File::create(path_txt.clone()) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                error!("Failed to create {}: {:?}", path_txt.to_str().unwrap_or("EMPTY PATH"), e);
+                                return;
+                            }
+                        },
+                    )
+                }
+            };
+            {
+                let mut encoder = png::Encoder::new(f_png, w, h);
+                encoder.set_color(png::ColorType::RGBA);
+                encoder.set_depth(png::BitDepth::Eight);
+                let mut writer = match encoder.write_header() {
+                    Ok(writer) => writer,
+                    Err(e) => {
+                        error!("Failed to write PNG header for {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
+                        return;
                     },
                 };
-            };
-            let mut encoder = png::Encoder::new(f, w, h);
-            encoder.set_color(png::ColorType::RGBA);
-            encoder.set_depth(png::BitDepth::Eight);
-            let mut writer = match encoder.write_header() {
-                Ok(writer) => writer,
-                Err(e) => {
-                    error!("Failed to write PNG header for {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
-                    return;
-                },
-            };
-            let mut writer = writer.stream_writer();
-            for y in 0..h {
-                use std::io::Write;
-                let y_ = h-y-1;
-                let i0 = 4 * (w *  y_     ) as usize;
-                let i1 = 4 * (w * (y_ + 1)) as usize;
-                if let Err(e) = writer.write_all(&data[i0..i1]) {
-                    error!("Failed to encode PNG data for {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
+                let mut writer = writer.stream_writer();
+                for y in 0..h {
+                    let y_ = h-y-1;
+                    let i0 = 4 * (w *  y_     ) as usize;
+                    let i1 = 4 * (w * (y_ + 1)) as usize;
+                    if let Err(e) = writer.write_all(&data[i0..i1]) {
+                        error!("Failed to encode PNG data for {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
+                    }
+                }
+                if let Err(e) = writer.finish() {
+                    error!("Failed to finish encoding PNG image {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
                 }
             }
-            if let Err(e) = writer.finish() {
-                error!("Failed to finish encoding PNG image {}: {:?}", path.to_str().unwrap_or("EMPTY PATH"), e);
+            {
+                if let Err(e) = f_txt.write(meta.as_bytes()) {
+                    error!("Failed to write metadata {}: {:?}", path_txt.to_str().unwrap_or("EMPTY PATH"), e);
+                }
             }
         });
 
@@ -658,7 +675,9 @@ impl AsyncReadback {
         Self{ on_frame_data, frames, i: 0 }
     }
 
-    fn with_surface<Draw: FnMut(&mut glium::framebuffer::SimpleFrameBuffer)>(&mut self, display: &glium::Display, mut draw: Draw) {
+    fn with_surface<Draw>(&mut self, display: &glium::Display, mut draw: Draw)
+        where Draw: FnMut(&mut glium::framebuffer::SimpleFrameBuffer, &mut dyn std::io::Write)
+    {
         let frame = &mut self.frames[self.i];
         if let Some(pbo) = &mut frame.pbo {
             let w = frame.texture.width();
@@ -666,11 +685,13 @@ impl AsyncReadback {
             let bytes = 4 * w as usize * h as usize;
             assert_eq!(bytes, pbo.get_size());
             let data = unsafe { std::slice::from_raw_parts((*pbo.map_read()).as_ptr() as *const u8, bytes) };
-            (self.on_frame_data)(w, h, data);
+            let meta = std::str::from_utf8(&frame.meta).unwrap();
+            (self.on_frame_data)(w, h, data, meta);
         }
         let mut fbo = glium::framebuffer::SimpleFrameBuffer::new(display, &frame.texture)
             .expect("failed to create framebuffer");
-        draw(&mut fbo);
+        frame.meta.clear();
+        draw(&mut fbo, &mut frame.meta);
         frame.pbo = Some(frame.texture.read_to_pixel_buffer());
         self.i += 1;
         self.i = self.i % ASYNC_READBACK_FRAMES;
@@ -679,6 +700,7 @@ impl AsyncReadback {
     fn discard(&mut self) {
         for frame in self.frames.iter_mut() {
             frame.pbo = None;
+            frame.meta.clear();
         }
     }
 
@@ -691,9 +713,11 @@ impl AsyncReadback {
                 let bytes = 4 * w as usize * h as usize;
                 assert_eq!(bytes, pbo.get_size());
                 let data = unsafe { std::slice::from_raw_parts((*pbo.map_read()).as_ptr() as *const u8, bytes) };
-                (self.on_frame_data)(w, h, data);
+                let meta = std::str::from_utf8(&frame.meta).unwrap();
+                (self.on_frame_data)(w, h, data, meta);
             }
             frame.pbo = None;
+            frame.meta.clear();
             self.i += 1;
             self.i = self.i % ASYNC_READBACK_FRAMES;
         }
@@ -863,7 +887,12 @@ impl GameState {
     }
 
     #[inline(never)]
-    fn draw<Surf: glium::Surface>(&mut self, renderer: &mut Renderer, display: &glium::Display, surface: &mut Surf) {
+    fn draw<Surf: glium::Surface>(&mut self,
+        renderer: &mut Renderer,
+        display: &glium::Display,
+        surface: &mut Surf,
+        meta: Option<&mut dyn std::io::Write>)
+    {
         surface.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
 
         if let Some(next) = self.show_scan {
@@ -890,6 +919,28 @@ impl GameState {
                     collided.extend(stack.iter().cloned());
                 }
                 stack.push((index, id))
+            }
+
+            if let Some(w) = meta {
+                if let Err(e) = writeln!(w, "collided:") {
+                    error!("failed to write metadata: {}", e);
+                };
+                for &(index, id) in collided.iter() {
+                    if let Err(e) = writeln!(w, "{:?} {:?}", index, id) {
+                        error!("failed to write metadata: {}", e);
+                    };
+                }
+                if let Err(e) = writeln!(w, "dropped:") {
+                    error!("failed to write metadata: {}", e);
+                };
+                for &(index, id) in dropped.iter() {
+                    if let Err(e) = writeln!(w, "{:?} {:?}", index, id) {
+                        error!("failed to write metadata: {}", e);
+                    };
+                }
+                if let Err(e) = writeln!(w, "current:\n{:?} {:?}", next.0, next.1) {
+                    error!("failed to write metadata: {}", e);
+                };
             }
 
             #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
@@ -1089,8 +1140,8 @@ fn main() {
                                 if key_state == ElementState::Pressed {
                                     if recording == RecordingState::NotRecording {
                                         screenshots.discard();
-                                        screenshots.with_surface(&display, |surface| {
-                                            game_state.draw(&mut renderer, &display, surface);
+                                        screenshots.with_surface(&display, |surface, meta| {
+                                            game_state.draw(&mut renderer, &display, surface, Some(meta));
                                         });
                                         recording = RecordingState::Waiting(Instant::now() + Duration::from_secs(1));
                                     }
@@ -1129,15 +1180,15 @@ fn main() {
                     }
                 }
                 if recording == RecordingState::Recording {
-                    screenshots.with_surface(&display, |surface| {
-                        game_state.draw(&mut renderer, &display, surface);
+                    screenshots.with_surface(&display, |surface, meta| {
+                        game_state.draw(&mut renderer, &display, surface, Some(meta));
                     });
                 }
                 display.gl_window().window().request_redraw();
             }
             Event::RedrawRequested(..) => {
                 let mut frame = display.draw();
-                game_state.draw(&mut renderer, &display, &mut frame);
+                game_state.draw(&mut renderer, &display, &mut frame, None);
                 frame.finish().unwrap();
             }
             _ => {}
