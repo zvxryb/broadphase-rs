@@ -18,6 +18,8 @@ broadphase-rs is capable of supporting many thousands of objects at interactive 
 benchmarked against alternatives, the example's collision detection routine takes roughly ~6ms for 10,000 dynamic
 objects (stable-x86_64-pc-windows-msvc, rustc 1.32.0, Intel Core i5 6600K, release mode, using `par_scan()`)
 
+![Visualization](docs/images/visualization.apng)
+
 ## Features
 
 * Support for both 2D and 3D systems
