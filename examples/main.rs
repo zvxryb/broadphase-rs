@@ -4,6 +4,8 @@ extern crate zvxryb_broadphase as broadphase;
 extern crate backtrace;
 extern crate cgmath;
 extern crate env_logger;
+extern crate itertools;
+extern crate png;
 extern crate rand;
 extern crate specs;
 
@@ -18,12 +20,17 @@ extern crate log;
 #[macro_use(defer)]
 extern crate scopeguard;
 
+#[macro_use]
+extern crate smallvec;
+
 use cgmath::prelude::*;
 use rand::prelude::*;
 use specs::prelude::*;
 
 use broadphase::Bounds;
 use cgmath::{Point2, Vector2};
+use itertools::Itertools;
+use smallvec::SmallVec;
 use std::alloc::{GlobalAlloc, Layout as AllocLayout, System as SystemAlloc};
 use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
@@ -297,14 +304,14 @@ impl<'a> specs::System<'a> for Lifecycle {
         const BALL_COUNT_MAX: u32 = 2500;
         const LIFETIME_MIN_MS: u32 = 10000;
         const LIFETIME_MAX_MS: u32 = 50000;
-        for _ in 0..BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS {
+        for _ in 0..std::cmp::max(BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS, 1) {
             if ball_count.0 >= BALL_COUNT_MAX {
                 break;
             }
             let lifetime = Duration::from_millis(rand::thread_rng().gen_range(
                 LIFETIME_MIN_MS as u64, LIFETIME_MAX_MS as u64));
 
-            let r = rand::thread_rng().gen_range(0.5f32, 2.0f32).exp();
+                let r = rand::thread_rng().gen_range(0.5f32, 2.0f32).exp();
 
             let x0 = 0f32 + r;
             let x1 = screen_size.0 as f32 - 2f32 * r + x0;
@@ -570,6 +577,153 @@ impl InstanceBuffer {
     }
 }
 
+struct OffscreenTarget {
+    texture: glium::texture::SrgbTexture2d,
+    pbo: Option<glium::texture::pixel_buffer::PixelBuffer<(u8, u8, u8, u8)>>,
+    meta: Vec<u8>,
+}
+
+impl OffscreenTarget {
+    fn with_size(display: &glium::Display, w: u32, h: u32) -> Option<Self> {
+        let texture = match glium::texture::SrgbTexture2d::empty_with_format(display,
+            glium::texture::SrgbFormat::U8U8U8U8,
+            glium::texture::MipmapsOption::NoMipmap,
+            w, h)
+        {
+            Ok(texture) => texture,
+            Err(_) => return None,
+        };
+        Some(Self{ texture, pbo: None, meta: Vec::new() })
+    }
+}
+
+const ASYNC_READBACK_FRAMES: usize = 3;
+
+struct AsyncReadback {
+    on_frame_data: Box<dyn FnMut(u32, u32, &[u8], &str)>,
+    frames: [OffscreenTarget; ASYNC_READBACK_FRAMES],
+    i: usize,
+}
+
+impl AsyncReadback {
+    fn png_writer(display: &glium::Display, w: u32, h: u32, base: std::path::PathBuf) -> Self {
+        use std::io::Write;
+        let on_frame_data = Box::new(move |w: u32, h: u32, data: &[u8], meta: &str| {
+            static INDEX: AtomicU32 = AtomicU32::new(0);
+            let (path_png, path_txt, f_png, mut f_txt) = loop {
+                let path_png = base.with_file_name(format!("{}_{:05}.{}",
+                    base.file_stem().and_then(|s| s.to_str()).unwrap_or("default"),
+                    INDEX.fetch_add(1, AtomicOrdering::Relaxed),
+                    base.extension().and_then(|s| s.to_str()).unwrap_or("png")));
+                let path_txt = path_png.with_extension("txt");
+                if !path_png.exists() && !path_txt.exists() {
+                    break (path_png.clone(), path_txt.clone(),
+                        match std::fs::File::create(path_png.clone()) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                error!("Failed to create {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
+                                return;
+                            }
+                        },
+                        match std::fs::File::create(path_txt.clone()) {
+                            Ok(f) => f,
+                            Err(e) => {
+                                error!("Failed to create {}: {:?}", path_txt.to_str().unwrap_or("EMPTY PATH"), e);
+                                return;
+                            }
+                        },
+                    )
+                }
+            };
+            {
+                let mut encoder = png::Encoder::new(f_png, w, h);
+                encoder.set_color(png::ColorType::RGBA);
+                encoder.set_depth(png::BitDepth::Eight);
+                let mut writer = match encoder.write_header() {
+                    Ok(writer) => writer,
+                    Err(e) => {
+                        error!("Failed to write PNG header for {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
+                        return;
+                    },
+                };
+                let mut writer = writer.stream_writer();
+                for y in 0..h {
+                    let y_ = h-y-1;
+                    let i0 = 4 * (w *  y_     ) as usize;
+                    let i1 = 4 * (w * (y_ + 1)) as usize;
+                    if let Err(e) = writer.write_all(&data[i0..i1]) {
+                        error!("Failed to encode PNG data for {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
+                    }
+                }
+                if let Err(e) = writer.finish() {
+                    error!("Failed to finish encoding PNG image {}: {:?}", path_png.to_str().unwrap_or("EMPTY PATH"), e);
+                }
+            }
+            {
+                if let Err(e) = f_txt.write(meta.as_bytes()) {
+                    error!("Failed to write metadata {}: {:?}", path_txt.to_str().unwrap_or("EMPTY PATH"), e);
+                }
+            }
+        });
+
+        let frames = [
+            OffscreenTarget::with_size(display, w, h).unwrap(),
+            OffscreenTarget::with_size(display, w, h).unwrap(),
+            OffscreenTarget::with_size(display, w, h).unwrap(),
+        ];
+
+        Self{ on_frame_data, frames, i: 0 }
+    }
+
+    fn with_surface<Draw>(&mut self, display: &glium::Display, mut draw: Draw)
+        where Draw: FnMut(&mut glium::framebuffer::SimpleFrameBuffer, &mut dyn std::io::Write)
+    {
+        let frame = &mut self.frames[self.i];
+        if let Some(pbo) = &mut frame.pbo {
+            let w = frame.texture.width();
+            let h = frame.texture.height();
+            let bytes = 4 * w as usize * h as usize;
+            assert_eq!(bytes, pbo.get_size());
+            let data = unsafe { std::slice::from_raw_parts((*pbo.map_read()).as_ptr() as *const u8, bytes) };
+            let meta = std::str::from_utf8(&frame.meta).unwrap();
+            (self.on_frame_data)(w, h, data, meta);
+        }
+        let mut fbo = glium::framebuffer::SimpleFrameBuffer::new(display, &frame.texture)
+            .expect("failed to create framebuffer");
+        frame.meta.clear();
+        draw(&mut fbo, &mut frame.meta);
+        frame.pbo = Some(frame.texture.read_to_pixel_buffer());
+        self.i += 1;
+        self.i = self.i % ASYNC_READBACK_FRAMES;
+    }
+
+    fn discard(&mut self) {
+        for frame in self.frames.iter_mut() {
+            frame.pbo = None;
+            frame.meta.clear();
+        }
+    }
+
+    fn flush(&mut self) {
+        for _ in 0..ASYNC_READBACK_FRAMES {
+            let frame = &mut self.frames[self.i];
+            if let Some(pbo) = &mut frame.pbo {
+                let w = frame.texture.width();
+                let h = frame.texture.height();
+                let bytes = 4 * w as usize * h as usize;
+                assert_eq!(bytes, pbo.get_size());
+                let data = unsafe { std::slice::from_raw_parts((*pbo.map_read()).as_ptr() as *const u8, bytes) };
+                let meta = std::str::from_utf8(&frame.meta).unwrap();
+                (self.on_frame_data)(w, h, data, meta);
+            }
+            frame.pbo = None;
+            frame.meta.clear();
+            self.i += 1;
+            self.i = self.i % ASYNC_READBACK_FRAMES;
+        }
+    }
+}
+
 struct Renderer {
     program_main: glium::Program,
     screen_size : [f32; 2],
@@ -611,7 +765,7 @@ impl Renderer {
                 out vec4 f_color;
 
                 void main() {
-                    f_color = vec4(v_color.rgb, 1.0);
+                    f_color = v_color;
                 }
             "#,
             None)
@@ -656,20 +810,31 @@ impl Renderer {
         self.circles.write(display, circles);
     }
 
-    fn draw(&self, frame: &mut glium::Frame) {
-        use glium::Surface;
+    fn draw<Surf: glium::Surface>(&self, surface: &mut Surf) {
         let params = glium::DrawParameters{
+            blend: glium::Blend{
+                color: glium::BlendingFunction::Addition{
+                    source: glium::LinearBlendingFactor::SourceAlpha,
+                    destination: glium::LinearBlendingFactor::One,
+                },
+                alpha: glium::BlendingFunction::Addition{
+                    source: glium::LinearBlendingFactor::Zero,
+                    destination: glium::LinearBlendingFactor::One,
+                },
+                ..Default::default()
+            },
+            smooth: Some(glium::Smooth::Nicest),
             .. Default::default()
         };
         let uniforms = uniform!{
             screen_size: self.screen_size
         };
-        frame.draw(
+        surface.draw(
             (&self.vbo_circle, self.circles.slice().per_instance().unwrap()),
             glium::index::NoIndices(glium::index::PrimitiveType::LineLoop),
             &self.program_main, &uniforms, &params)
             .expect("failed to draw circles");
-        frame.draw(
+        surface.draw(
             (&self.vbo_box, self.boxes.slice().per_instance().unwrap()),
             glium::index::NoIndices(glium::index::PrimitiveType::LineLoop),
             &self.program_main, &uniforms, &params)
@@ -682,6 +847,7 @@ struct GameState {
     lifecycle: Lifecycle,
     kinematics: Kinematics,
     collisions: Collisions,
+    show_scan: Option<(broadphase::Index32_2D, specs::world::Index)>,
 }
 
 impl GameState {
@@ -696,6 +862,7 @@ impl GameState {
             lifecycle: Lifecycle {},
             kinematics: Kinematics {},
             collisions: Collisions::new(),
+            show_scan: None,
         }
     }
 }
@@ -703,66 +870,204 @@ impl GameState {
 impl GameState {
     #[inline(never)]
     fn update(&mut self) {
-        let step = Duration::from_micros(Self::FRAME_TIME_US as u64);
-        let max_delta = Duration::from_micros(Self::MAX_FRAME_TIME_US as u64);
-        self.world.get_mut::<Time>().unwrap().update(step, max_delta);
-
-        while self.world.get_mut::<Time>().unwrap().step() {
-            self.lifecycle.run_now(&self.world);
-            self.world.maintain();
-            self.kinematics.run_now(&self.world);
-            self.collisions.run_now(&self.world);
+        if let Some(next) = self.show_scan {
+            self.show_scan = self.collisions.system.iter().skip_while(|&&pair| pair <= next).next().cloned();
+        } else {
+            let step = Duration::from_micros(Self::FRAME_TIME_US as u64);
+            let max_delta = Duration::from_micros(Self::MAX_FRAME_TIME_US as u64);
+            self.world.get_mut::<Time>().unwrap().update(step, max_delta);
+    
+            while self.world.get_mut::<Time>().unwrap().step() {
+                self.lifecycle.run_now(&self.world);
+                self.world.maintain();
+                self.kinematics.run_now(&self.world);
+                self.collisions.run_now(&self.world);
+            }
         }
     }
 
     #[inline(never)]
-    fn draw(&mut self, renderer: &mut Renderer, display: &glium::Display) {
-        use glium::Surface;
-        let mut frame = display.draw();
-        frame.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
+    fn draw<Surf: glium::Surface>(&mut self,
+        renderer: &mut Renderer,
+        display: &glium::Display,
+        surface: &mut Surf,
+        meta: Option<&mut dyn std::io::Write>)
+    {
+        surface.clear_color(0f32, 0.0f32, 0.0f32, 1f32);
 
-        let time = self.world.get_mut::<Time>().unwrap();
-
-        let t = time.remainder();
-        let u: f32 = ((t.as_secs() as f32) * 1_000_000f32 + (t.subsec_micros() as f32))
-            / (Self::FRAME_TIME_US as f32);
-
-        let circles: Vec<_> = {
-            let positions = self.world.read_storage::<VerletPosition>();
-            let radii     = self.world.read_storage::<Radius>();
-            let colors    = self.world.read_storage::<Color>();
-
-            (&positions, &radii, &colors).join()
-                .map(|(&pos, &Radius(r), &color)|
-                    InstanceData{
-                        origin: (pos.1 + (pos.1 - pos.0) * u).into(),
-                        scale : [r, r],
-                        color : color.into(),
-                    })
-                .collect()
-        };
-        renderer.update_circles(display, circles.as_slice());
-
-        let collision_config = self.world.read_resource::<CollisionSystemConfig>();
-        let boxes: Vec<_> = if collision_config.enabled {
-            self.collisions.system.iter()
-                .map(|&(index, _)| {
-                    use broadphase::SystemBounds;
-                    let local: Bounds<_> = index.into();
-                    let global = collision_config.bounds.to_global(local);
-                    InstanceData{
-                        origin: global.center().to_vec().into(),
-                        scale : global.sizef().into(),
-                        color : [0.3, 0.3, 0.3, 1.0],
+        if let Some(next) = self.show_scan {
+            // this is effectively a duplicate of Layer::scan_impl, with a few modifications for visualization
+            // meant for illustration only, as it may diverge from scan_impl in the future
+            use broadphase::SpatialIndex;
+            let mut stack   : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
+            let mut dropped : SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
+            let mut collided: SmallVec<[(broadphase::Index32_2D, specs::world::Index); 256]> = SmallVec::new();
+            for &pair in self.collisions.system.iter() {
+                let (index, id) = pair;
+                while let Some(&(index_, _)) = stack.last() {
+                    if index.overlaps(index_) {
+                        break;
                     }
-                })
-                .collect()
-        } else { Vec::default() };
-        renderer.update_boxes(display, boxes.as_slice());
+                    if let Some(dropped_) = stack.pop() {
+                        if pair == next { dropped.push(dropped_); }
+                    }
+                }
+                if stack.iter().any(|&(_, id_)| id == id_) {
+                    continue;
+                }
+                if pair == next {
+                    collided.extend(stack.iter().cloned());
+                }
+                stack.push((index, id))
+            }
 
-        renderer.draw(&mut frame);
+            if let Some(w) = meta {
+                if let Err(e) = writeln!(w, "collided:") {
+                    error!("failed to write metadata: {}", e);
+                };
+                for &(index, id) in collided.iter() {
+                    if let Err(e) = writeln!(w, "{:?} {:?}", index, id) {
+                        error!("failed to write metadata: {}", e);
+                    };
+                }
+                if let Err(e) = writeln!(w, "dropped:") {
+                    error!("failed to write metadata: {}", e);
+                };
+                for &(index, id) in dropped.iter() {
+                    if let Err(e) = writeln!(w, "{:?} {:?}", index, id) {
+                        error!("failed to write metadata: {}", e);
+                    };
+                }
+                if let Err(e) = writeln!(w, "current:\n{:?} {:?}", next.0, next.1) {
+                    error!("failed to write metadata: {}", e);
+                };
+            }
 
-        frame.finish().unwrap();
+            #[derive(Copy, Clone, Eq, Ord, PartialEq, PartialOrd)]
+            enum ScanState {
+                Ignored,
+                Dropped,
+                Collided,
+                Selected,
+            }
+
+            impl ScanState {
+                fn color(&self) -> [f32; 4] {
+                    match self {
+                        ScanState::Selected => [0.0, 1.0, 0.0, 1.0],
+                        ScanState::Collided => [1.0, 0.0, 0.0, 0.5],
+                        ScanState::Dropped  => [0.0, 0.0, 1.0, 0.5],
+                        ScanState::Ignored  => [1.0, 1.0, 1.0, 0.02],
+                    }
+                }
+            }
+
+            let circles: Vec<_> = {
+                let ents      = self.world.entities();
+                let positions = self.world.read_storage::<VerletPosition>();
+                let radii     = self.world.read_storage::<Radius>();
+
+                (&ents, &positions, &radii).join()
+                    .map(|(ent, &pos, &Radius(r))|
+                        InstanceData{
+                            origin: pos.1.into(),
+                            scale : [r, r],
+                            color : if ent.id() == next.1 {
+                                ScanState::Selected
+                            } else if collided.iter().any(|&(_, id_)| ent.id() == id_) {
+                                ScanState::Collided
+                            } else if dropped.iter().any(|&(_, id_)| ent.id() == id_) {
+                                ScanState::Dropped
+                            } else {
+                                ScanState::Ignored
+                            }.color(),
+                        })
+                    .collect()
+            };
+            renderer.update_circles(display, circles.as_slice());
+
+            let collision_config = self.world.read_resource::<CollisionSystemConfig>();
+            let boxes: Vec<_> = if collision_config.enabled {
+                self.collisions.system.iter()
+                    .map(|&(index, id)|
+                        {
+                            let state = if index == next.0 {
+                                ScanState::Selected
+                            } else if collided.contains(&(index, id)) {
+                                ScanState::Collided
+                            } else if dropped.contains(&(index, id)) {
+                                ScanState::Dropped
+                            } else {
+                                ScanState::Ignored
+                            };
+                            (index, state)
+                        }
+                    )
+                    .coalesce(|l, r|
+                        if l.0 == r.0 {
+                            Ok((l.0, std::cmp::max(l.1, r.1)))
+                        } else {
+                            Err((l, r))
+                        }
+                    )
+                    .sorted_by_key(|&(_, state)| state)
+                    .map(|(index, state)| {
+                        use broadphase::SystemBounds;
+                        let local: Bounds<_> = index.into();
+                        let global = collision_config.bounds.to_global(local);
+                        InstanceData{
+                            origin: global.center().to_vec().into(),
+                            scale : global.sizef().into(),
+                            color : state.color(),
+                        }
+                    })
+                    .collect()
+            } else { Vec::default() };
+            renderer.update_boxes(display, boxes.as_slice());
+
+            renderer.draw(surface);
+        } else {
+            let time = self.world.get_mut::<Time>().unwrap();
+    
+            let t = time.remainder();
+            let u: f32 = ((t.as_secs() as f32) * 1_000_000f32 + (t.subsec_micros() as f32))
+                / (Self::FRAME_TIME_US as f32);
+    
+            let circles: Vec<_> = {
+                let positions = self.world.read_storage::<VerletPosition>();
+                let radii     = self.world.read_storage::<Radius>();
+                let colors    = self.world.read_storage::<Color>();
+    
+                (&positions, &radii, &colors).join()
+                    .map(|(&pos, &Radius(r), &color)|
+                        InstanceData{
+                            origin: (pos.1 + (pos.1 - pos.0) * u).into(),
+                            scale : [r, r],
+                            color : color.into(),
+                        })
+                    .collect()
+            };
+            renderer.update_circles(display, circles.as_slice());
+    
+            let collision_config = self.world.read_resource::<CollisionSystemConfig>();
+            let boxes: Vec<_> = if collision_config.enabled {
+                self.collisions.system.iter()
+                    .map(|&(index, _)| {
+                        use broadphase::SystemBounds;
+                        let local: Bounds<_> = index.into();
+                        let global = collision_config.bounds.to_global(local);
+                        InstanceData{
+                            origin: global.center().to_vec().into(),
+                            scale : global.sizef().into(),
+                            color : [1.0, 1.0, 1.0, 0.02],
+                        }
+                    })
+                    .collect()
+            } else { Vec::default() };
+            renderer.update_boxes(display, boxes.as_slice());
+
+            renderer.draw(surface);
+        }
     }
 }
 
@@ -778,14 +1083,15 @@ fn main() {
         .with_resizable(true);
     let context = glutin::ContextBuilder::new()
         .with_gl(glutin::GlRequest::Specific(glutin::Api::OpenGl, (4, 5)))
-        .with_gl_profile(glutin::GlProfile::Core)
-        .with_multisampling(4);
+        .with_gl_profile(glutin::GlProfile::Core);
     let display = glium::Display::new(window_builder, context, &events_loop)
         .expect("failed to create display");
 
-    let mut renderer = Renderer::from_display(&display);
-    let mut game_state = GameState::new();
     let screen_size = display.get_framebuffer_dimensions();
+
+    let mut renderer = Renderer::from_display(&display);
+    let mut screenshots = AsyncReadback::png_writer(&display, screen_size.0, screen_size.1, std::path::PathBuf::from("./screenshots/example"));
+    let mut game_state = GameState::new();
     game_state.world.insert(Time::default());
     game_state.world.insert(ScreenSize::from(screen_size));
     game_state.world.insert(CollisionSystemConfig::from_screen_size(screen_size));
@@ -794,6 +1100,15 @@ fn main() {
     game_state.world.register::<VerletPosition>();
     game_state.world.register::<Radius>();
     game_state.world.register::<Color>();
+
+    #[derive(Copy, Clone, Eq, PartialEq)]
+    enum RecordingState {
+        NotRecording,
+        Waiting(Instant),
+        Recording,
+    }
+
+    let mut recording = RecordingState::NotRecording;
 
     events_loop.run(move |event, _window_target, control| {
         use crate::glutin::event::{DeviceEvent, ElementState, Event, VirtualKeyCode, WindowEvent};
@@ -813,6 +1128,27 @@ fn main() {
                                     collision_config.dump_frame_allocs = true;
                                     println!("\nLOGGING ALLOCATIONS (\"TRACE\" LEVEL)\n");
                                 }
+                            Some(VirtualKeyCode::V) =>
+                                if key_state == ElementState::Pressed {
+                                    if game_state.show_scan.is_none() {
+                                        game_state.show_scan = game_state.collisions.system.iter().next().cloned();
+                                    }
+                                } else {
+                                    game_state.show_scan = None
+                                }
+                            Some(VirtualKeyCode::Snapshot) =>
+                                if key_state == ElementState::Pressed {
+                                    if recording == RecordingState::NotRecording {
+                                        screenshots.discard();
+                                        screenshots.with_surface(&display, |surface, meta| {
+                                            game_state.draw(&mut renderer, &display, surface, Some(meta));
+                                        });
+                                        recording = RecordingState::Waiting(Instant::now() + Duration::from_secs(1));
+                                    }
+                                } else {
+                                    screenshots.flush();
+                                    recording = RecordingState::NotRecording;
+                                }
                             _ => {}
                         }
                     _ => {}
@@ -820,6 +1156,7 @@ fn main() {
             Event::WindowEvent{event, ..} => {
                 match event {
                     WindowEvent::CloseRequested => {
+                        screenshots.flush();
                         *control = glutin::event_loop::ControlFlow::Exit;
                     }
                     WindowEvent::Resized(size) => {
@@ -828,16 +1165,31 @@ fn main() {
                         game_state.world.get_mut::<CollisionSystemConfig>().unwrap()
                             .update_bounds(size.width, size.height);
                         display.gl_window().window().request_redraw();
+                        screenshots.flush();
+                        screenshots = AsyncReadback::png_writer(&display, size.width, size.height, std::path::PathBuf::from("./screenshots/example"));
                     }
                     _ => {}
                 }
             }
             Event::MainEventsCleared => {
                 game_state.update();
+                if let RecordingState::Waiting(start) = recording {
+                    if Instant::now() > start {
+                        screenshots.discard();
+                        recording = RecordingState::Recording;
+                    }
+                }
+                if recording == RecordingState::Recording {
+                    screenshots.with_surface(&display, |surface, meta| {
+                        game_state.draw(&mut renderer, &display, surface, Some(meta));
+                    });
+                }
                 display.gl_window().window().request_redraw();
             }
             Event::RedrawRequested(..) => {
-                game_state.draw(&mut renderer, &display);
+                let mut frame = display.draw();
+                game_state.draw(&mut renderer, &display, &mut frame, None);
+                frame.finish().unwrap();
             }
             _ => {}
         }
