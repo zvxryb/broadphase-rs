@@ -301,7 +301,7 @@ impl<'a> specs::System<'a> for Lifecycle {
             }
         }
 
-        const BALL_COUNT_MAX: u32 = 2500;
+        const BALL_COUNT_MAX: u32 = 150;
         const LIFETIME_MIN_MS: u32 = 10000;
         const LIFETIME_MAX_MS: u32 = 50000;
         for _ in 0..std::cmp::max(BALL_COUNT_MAX*time.step.subsec_millis()/LIFETIME_MIN_MS, 1) {
@@ -311,7 +311,7 @@ impl<'a> specs::System<'a> for Lifecycle {
             let lifetime = Duration::from_millis(rand::thread_rng().gen_range(
                 LIFETIME_MIN_MS as u64, LIFETIME_MAX_MS as u64));
 
-                let r = rand::thread_rng().gen_range(0.5f32, 2.0f32).exp();
+                let r = rand::thread_rng().gen_range(1f32, 4f32).exp();
 
             let x0 = 0f32 + r;
             let x1 = screen_size.0 as f32 - 2f32 * r + x0;
@@ -352,7 +352,7 @@ impl<'a> specs::System<'a> for Kinematics {
         for mut pos in (&mut positions).join() {
             let velocity = pos.1 - pos.0;
             let speed = velocity.magnitude();
-            const SPEED_LIMIT: f32 = 1.5f32;
+            const SPEED_LIMIT: f32 = 3f32;
             if speed > SPEED_LIMIT {
                 pos.1 = pos.0 + SPEED_LIMIT * velocity / speed;
             }
@@ -369,7 +369,7 @@ impl Collisions {
     fn new() -> Self {
         Self {
             system: broadphase::LayerBuilder::new()
-                .with_min_depth(4)
+                .with_min_depth(0)
                 .build(),
             collisions: Vec::new(),
         }
@@ -729,8 +729,10 @@ struct Renderer {
     screen_size : [f32; 2],
     boxes       : InstanceBuffer,
     circles     : InstanceBuffer,
+    lines       : InstanceBuffer,
     vbo_box     : glium::VertexBuffer<VertexData>,
     vbo_circle  : glium::VertexBuffer<VertexData>,
+    vbo_line    : glium::VertexBuffer<VertexData>,
 }
 
 impl Renderer {
@@ -772,6 +774,7 @@ impl Renderer {
             .expect("failed to compile shader");
         let boxes   = InstanceBuffer::with_capacity(display, 40_000).expect("failed to create boxes instance buffer");
         let circles = InstanceBuffer::with_capacity(display, 10_000).expect("failed to create circles instance buffer");
+        let lines   = InstanceBuffer::with_capacity(display,  1_000).expect("failed to create circles instance buffer");
         let vbo_box = glium::VertexBuffer::immutable(display, &[
             VertexData{ offset: [-0.5, -0.5] },
             VertexData{ offset: [ 0.5, -0.5] },
@@ -788,13 +791,19 @@ impl Renderer {
             glium::VertexBuffer::immutable(display, data.as_slice())
                 .expect("failed to create circle vbo")
         };
+        let vbo_line = glium::VertexBuffer::immutable(display, &[
+            VertexData{ offset: [ 0.0,  0.0] },
+            VertexData{ offset: [ 1.0,  1.0] },
+        ]).expect("failed to create line vbo");
         Self{
             program_main,
             screen_size,
             boxes,
             circles,
+            lines,
             vbo_box,
             vbo_circle,
+            vbo_line,
         }
     }
 
@@ -808,6 +817,10 @@ impl Renderer {
 
     fn update_circles(&mut self, display: &glium::Display, circles: &[InstanceData]) {
         self.circles.write(display, circles);
+    }
+
+    fn update_lines(&mut self, display: &glium::Display, lines: &[InstanceData]) {
+        self.lines.write(display, lines);
     }
 
     fn draw<Surf: glium::Surface>(&self, surface: &mut Surf) {
@@ -839,6 +852,11 @@ impl Renderer {
             glium::index::NoIndices(glium::index::PrimitiveType::LineLoop),
             &self.program_main, &uniforms, &params)
             .expect("failed to draw boxes");
+        surface.draw(
+            (&self.vbo_line, self.lines.slice().per_instance().unwrap()),
+            glium::index::NoIndices(glium::index::PrimitiveType::LineStrip),
+            &self.program_main, &uniforms, &params)
+            .expect("failed to draw lines");
     }
 }
 
@@ -848,6 +866,7 @@ struct GameState {
     kinematics: Kinematics,
     collisions: Collisions,
     show_scan: Option<(broadphase::Index32_2D, specs::world::Index)>,
+    show_pick: Option<usize>,
 }
 
 impl GameState {
@@ -863,6 +882,7 @@ impl GameState {
             kinematics: Kinematics {},
             collisions: Collisions::new(),
             show_scan: None,
+            show_pick: None,
         }
     }
 }
@@ -872,6 +892,8 @@ impl GameState {
     fn update(&mut self) {
         if let Some(next) = self.show_scan {
             self.show_scan = self.collisions.system.iter().skip_while(|&&pair| pair <= next).next().cloned();
+        } else if let Some(next) = &mut self.show_pick {
+            *next += 1;
         } else {
             let step = Duration::from_micros(Self::FRAME_TIME_US as u64);
             let max_delta = Duration::from_micros(Self::MAX_FRAME_TIME_US as u64);
@@ -1025,6 +1047,108 @@ impl GameState {
             } else { Vec::default() };
             renderer.update_boxes(display, boxes.as_slice());
 
+            renderer.update_lines(display, &[]);
+
+            renderer.draw(surface);
+        } else if let Some(next) = self.show_pick {
+            let entities  = self.world.entities();
+            let positions = self.world.read_storage::<VerletPosition>();
+            let radii     = self.world.read_storage::<Radius>();
+            let collision_config = self.world.read_resource::<CollisionSystemConfig>();
+
+            let mut circles: Vec<_> = {
+                (&entities, &positions, &radii).join()
+                    .map(|(_, &pos, &Radius(r))|
+                        InstanceData{
+                            origin: pos.1.into(),
+                            scale : [r, r],
+                            color : [1.0, 1.0, 1.0, 0.02]
+                        })
+                    .collect()
+            };
+            let mut boxes: Vec<_> = if collision_config.enabled {
+                self.collisions.system.iter()
+                    .map(|&(index, id)| {
+                        use broadphase::SystemBounds;
+                        let local: Bounds<_> = index.into();
+                        let global = collision_config.bounds.to_global(local);
+                        InstanceData{
+                            origin: global.center().to_vec().into(),
+                            scale : global.sizef().into(),
+                            color : [1.0, 1.0, 1.0, 0.02],
+                        }
+                    })
+                    .collect()
+            } else { Vec::default() };
+
+            let mut i = 0;
+            let mut found = false;
+            let test_geom = broadphase::RayTestGeometry::with_system_bounds(
+                collision_config.bounds,
+                Point2::new(0f32, 360f32),
+                Vector2::new(1f32, 0f32),
+                0f32,
+                std::f32::INFINITY);
+            self.collisions.system.pick(&test_geom, std::f32::INFINITY, None, |test_geom, max_dist, id| {
+                    let ent = entities.entity(id);
+
+                    let position = positions.get(ent).unwrap();
+                    let &Radius(r) = radii.get(ent).unwrap();
+                    let center = Point2::new(position.1.x, position.1.y);
+                    let ball_dir = center - test_geom.origin;
+                    let ball_proj = test_geom.direction.dot(ball_dir);
+                    let ball_extent = (ball_proj.powi(2) - ball_dir.magnitude2() + r.powi(2)).sqrt();
+
+                    let range_min = ball_proj - ball_extent;
+                    let range_max = ball_proj + ball_extent;
+
+                    let result = if range_max < 0f32 {
+                        std::f32::INFINITY
+                    } else if range_min < 0f32 {
+                        0f32
+                    } else {
+                        range_min
+                    };
+
+                    if i == next {
+                        found = true;
+                        renderer.update_lines(display, &[
+                            InstanceData{
+                                origin: (test_geom.origin + test_geom.direction * test_geom.range_min).into(),
+                                scale: (test_geom.direction * (test_geom.range_max - test_geom.range_min)).into(),
+                                color: [1.0, 0.5, 0.0, 1.0]
+                            }
+                        ]);
+                        circles.push(InstanceData{
+                            origin: center.into(),
+                            scale: [r, r],
+                            color: [0.0, 1.0, 0.0, 1.0]
+                        });
+                        if result.is_finite() {
+                            circles.push(InstanceData{
+                                origin: (test_geom.origin + test_geom.direction * result).into(),
+                                scale: [4.0, 4.0],
+                                color: [1.0, 0.0, 0.0, 1.0]
+                            });
+                        }
+                        boxes.push(InstanceData{
+                            origin: test_geom.cell_bounds.center().to_vec().into(),
+                            scale:  test_geom.cell_bounds.sizef().into(),
+                            color: [1.0, 0.0, 0.0, 1.0]
+                        });
+                    }
+
+                    i += 1;
+                    result
+                });
+
+            if !found {
+                self.show_pick = None;
+                renderer.update_lines(display, &[]);
+            }
+
+            renderer.update_circles(display, circles.as_slice());
+            renderer.update_boxes  (display, boxes  .as_slice());
             renderer.draw(surface);
         } else {
             let time = self.world.get_mut::<Time>().unwrap();
@@ -1065,6 +1189,8 @@ impl GameState {
                     .collect()
             } else { Vec::default() };
             renderer.update_boxes(display, boxes.as_slice());
+
+            renderer.update_lines(display, &[]);
 
             renderer.draw(surface);
         }
@@ -1128,6 +1254,10 @@ fn main() {
                                     collision_config.dump_frame_allocs = true;
                                     println!("\nLOGGING ALLOCATIONS (\"TRACE\" LEVEL)\n");
                                 }
+                            Some(VirtualKeyCode::P) =>
+                                if key_state == ElementState::Pressed {
+                                    game_state.show_pick = Some(0);
+                                }
                             Some(VirtualKeyCode::V) =>
                                 if key_state == ElementState::Pressed {
                                     if game_state.show_scan.is_none() {
@@ -1172,7 +1302,6 @@ fn main() {
                 }
             }
             Event::MainEventsCleared => {
-                game_state.update();
                 if let RecordingState::Waiting(start) = recording {
                     if Instant::now() > start {
                         screenshots.discard();
@@ -1185,6 +1314,7 @@ fn main() {
                     });
                 }
                 display.gl_window().window().request_redraw();
+                game_state.update();
             }
             Event::RedrawRequested(..) => {
                 let mut frame = display.draw();

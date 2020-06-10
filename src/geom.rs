@@ -461,11 +461,11 @@ pub struct RayTestGeometry<Point>
 where
     Point: EuclideanSpace<Scalar = f32>
 {
-    cell_bounds: Bounds<Point>,
-    origin: Point,
-    direction: Point::Diff,
-    range_min: f32,
-    range_max: f32
+    pub cell_bounds: Bounds<Point>,
+    pub origin: Point,
+    pub direction: Point::Diff,
+    pub range_min: f32,
+    pub range_max: f32
 }
 
 impl Debug for RayTestGeometry<Point2<f32>> {
